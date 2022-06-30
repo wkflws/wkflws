@@ -1,0 +1,15 @@
+[flake8]
+exclude = .git,__pycache__,.venv
+max-line-length = 88
+import-order-style = google
+application-import-names = wkflws
+ignore =
+    # Missing docstring for public module
+    D100
+    # Missing docstring for magic method (e.g. __str__)
+    D105
+    # Missing docstring in __init__
+    D107
+per-file-ignores =
+    # Missing docstring in public function
+    tests/*:D103
