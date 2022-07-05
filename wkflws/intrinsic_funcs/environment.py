@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from jsonpath_ng import parse as jsonpath_parse
+from jsonpath_ng import parse as jsonpath_parse  # type:ignore # no stubs
 
 from .token import Token
 

@@ -1,4 +1,4 @@
-"""Multi-process executor for workflows.
+"""Multi-process executor for wkflws.
 
 This module executes each step as a new process on the same host. This can be useful
 for development because the memory is separated similarly to a production multi-host
@@ -87,6 +87,20 @@ async def execution_entry_point(
     workflow_execution: WorkflowExecution,
     state_input: Optional[str] = None,
 ):
+    """Entry point to the node subprocess.
+
+    This function serves as an entry point to the sub-process which executes a
+    node. This funciton is responsible for preparing the input, context, and output for
+    the actual node.
+
+    Args:
+        resource_path: `Resource` defined in the Step. For multi-process this will be a
+            command-line command to execute on a shell.
+        workflow_execution: The entire workflow execution definition so that it can be
+            used during data preparation.
+        state_input: The input to this node's execution (i.e. the output from the
+            previous node.)
+    """
     if workflow_execution.current_state_name is None:
         logger.error(
             f"Undefined current state for resource {resource_path}. Unable to continue"
@@ -151,7 +165,6 @@ async def execution_entry_point(
 
 if __name__ == "__main__":
     import asyncio
-    import sys
 
     try:
         resource_path: Optional[str] = sys.argv[1]

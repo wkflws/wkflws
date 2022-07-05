@@ -22,6 +22,9 @@ class Settings(_BaseSettings):
     #: Event.
     WORKFLOW_LOOKUP_CLASS: str = ""
 
+    #: Define the class to use when executing nodes.
+    EXECUTOR_CLASS: str = "wkflws.executors.mp.MultiProcessExecutor"
+
     class Config:
         """Global configuration for settings."""
 

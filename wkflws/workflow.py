@@ -4,9 +4,10 @@ import json
 from types import MappingProxyType
 from typing import Any, Optional, Type, TYPE_CHECKING
 
-from jsonpath_ng import parse as jsonpath_parse
+from jsonpath_ng import parse as jsonpath_parse  # type:ignore # no stubs
 from pydantic import BaseModel
 
+from .conf import settings
 from .events import Event
 from .exceptions import (
     WkflwExecutionAlreadyStartedError,
@@ -36,14 +37,12 @@ class WorkflowExecution(BaseModel):
     #: holds a deserialized version of the state language workflow definition.
     workflow_definition: WorkflowType
     #: The input provided to the trigger node.
-    original_input: MappingProxyType[str, Any]  # dict[str, Any]
+    original_input: dict[str, Any]
     #: Context by state that should be provided to each state as it is executed.
     state_context: dict[str, Any]
 
     #: describes the start time of this exeution.
     execution_start_time: datetime
-
-    executor_class_path: str = "wkflws.executors.mp.MultiProcessExecutor"
 
     #: The name of the current state. If this is None then the workflow has not started.
     current_state_name: Optional[str] = None
@@ -90,7 +89,7 @@ class WorkflowExecution(BaseModel):
             raise WkflwExecutionException(
                 f"Unknown next step for {self.current_state_name}"
             )
-        self.set_current_state_name(next_state)
+        self.set_current_state_name(str(next_state))
 
         await self.execute_state(self.current_state_name, state_input)
 
@@ -130,7 +129,7 @@ class WorkflowExecution(BaseModel):
     def executor_class(self) -> Type["BaseExecutor"]:
         """Return the executor class by parsing ``self.executor_class_path``."""
         clz: Type["BaseExecutor"] = module_attribute_from_string(
-            self.executor_class_path
+            settings.EXECUTOR_CLASS
         )
 
         return clz
@@ -432,7 +431,7 @@ async def initialize_workflows(
     if logger.getEffectiveLevel() == LogLevel.DEBUG:
         logger.debug(f"Executing {len(workflow_exec_datas)} workflows")
 
-    workflows = ()
+    workflows: tuple[WorkflowExecution, ...] = ()
     for wkflw_exec_data in workflow_exec_datas:
         workflows += (
             WorkflowExecution(
