@@ -2,9 +2,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import json
 from types import MappingProxyType
-from typing import Any, Optional, Type, TYPE_CHECKING
+from typing import Any, Optional, Type, TYPE_CHECKING, Union
 
-from jsonpath_ng import parse as jsonpath_parse  # type:ignore # no stubs
 from pydantic import BaseModel
 
 from .conf import settings
@@ -20,6 +19,8 @@ from .intrinsic_funcs.parser import Parser
 from .intrinsic_funcs.scanner import Scanner
 from .logging import logger, LogLevel
 from .utils.execution import module_attribute_from_string
+from .utils.jsonpath import get_jsonpath_value, set_jsonpath_value
+
 
 if TYPE_CHECKING:
     from .executors.base import BaseExecutor
@@ -261,11 +262,17 @@ class WorkflowExecution(BaseModel):
                 state_input=state_input,
             )
 
-        jsonpath_parser = jsonpath_parse(branch["Variable"])
         _is_value_present = True
+
         try:
-            value = jsonpath_parser.find(state_input)[0].value
-        except IndexError:
+            jsonpath_expr = branch["Variable"]
+            if jsonpath_expr.startswith("$$"):
+                jsonpath_expr = jsonpath_expr[1:]
+
+            value: Union[str, tuple[Any, ...]] = get_jsonpath_value(
+                state_input, jsonpath_expr
+            )
+        except ValueError:
             _is_value_present = False
             # This is done for the type checker. It's unused for IsPresent and an
             # exception raised otherwise.
@@ -282,15 +289,15 @@ class WorkflowExecution(BaseModel):
             )
             return _is_value_present
         elif "NumericGreaterThan" in branch:
-            return Decimal(value) >= Decimal(branch["NumericGreaterThan"])
+            return Decimal(str(value)) >= Decimal(branch["NumericGreaterThan"])
         elif "NumericGreaterThanEquals" in branch:
-            return Decimal(value) >= Decimal(branch["NumericGreaterThanEquals"])
+            return Decimal(str(value)) >= Decimal(branch["NumericGreaterThanEquals"])
         elif "NumericLessThan" in branch:
-            return Decimal(value) < Decimal(branch["NumericLessThan"])
+            return Decimal(str(value)) < Decimal(branch["NumericLessThan"])
         elif "NumericLessThanEquals" in branch:
-            return Decimal(value) < Decimal(branch["NumericLessThan"])
+            return Decimal(str(value)) < Decimal(branch["NumericLessThan"])
         elif "NumericEquals" in branch:
-            return Decimal(value) == Decimal(branch["NumericEquals"])
+            return Decimal(str(value)) == Decimal(branch["NumericEquals"])
         elif "StringEquals" in branch:
             logger.debug(
                 f"Evaluating StringEquals "
@@ -361,16 +368,13 @@ class WorkflowExecution(BaseModel):
             The effective output of this node's execution.
         """
         input_: dict[str, Any] = json.loads(raw_input_ or "{}")
-        output: dict[str, Any] = json.loads(raw_output)
+        output: Any = json.loads(raw_output)  # dict[str, Any]
         logger.debug(f" > Output > Raw Input: '{json.dumps(input_)}")
 
         if "ResultSelector" in self.current_state:
             # > The value of "ResultSelector" MUST be a Payload Template, whose input is
             # > the result, and whose payload replaces and becomes the effective result.
-            result_selector_parser = jsonpath_parse(
-                self.current_state["ResultSelector"]
-            )
-            output = result_selector_parser.find(output)[0].value
+            output = get_jsonpath_value(output, self.current_state["ResultSelector"])
 
             logger.debug(f" > Output > ResultSelector found: {json.dumps(output)}")
 
@@ -392,11 +396,14 @@ class WorkflowExecution(BaseModel):
                     "value."
                 )
 
-            p = jsonpath_parse(result_path)
-            # Python is pass-by-reference so the assignment is unnecesary with the way
-            # this function works but the docs state that it _returns_ the updated
-            # `data` arg.
-            output = p.update_or_create(input_, output)
+            # Disable use of copy because the original is no longer needed.
+            output = set_jsonpath_value(
+                input_,
+                output,
+                result_path,
+                create_if_missing=True,
+                use_copy=False,
+            )
             logger.debug(f" > Output > ResultPath found: {json.dumps(output)}")
 
         if "OutputPath" in self.current_state:
@@ -404,11 +411,7 @@ class WorkflowExecution(BaseModel):
             # > state’s output after the application of ResultPath, producing the
             # > effective output which serves as the raw input for the next state.
 
-            p = jsonpath_parse(self.current_state["OutputPath"])
-            # Again, Python is pass-by-reference so the assignment is unnecesary with
-            # the way this function works but the docs state that it _returns_ the
-            # updated `data` arg.
-            output = p.find(output, output)[0].value
+            output = get_jsonpath_value(output, self.current_state["OutputPath"])
             logger.debug(f" > Output > OutputPath found: {json.dumps(output)}")
 
         logger.debug(f" > Output: {json.dumps(output)}")
@@ -442,7 +445,6 @@ class WorkflowExecution(BaseModel):
                 # > suffix.
 
                 if value.startswith("$"):
-                    jp_parser = jsonpath_parse(value)
                     if value.startswith("$$"):
                         # > If the field value begins with "$$", the first dollar sign
                         # > is stripped and the remainder MUST be a Path. In this case,
@@ -450,18 +452,16 @@ class WorkflowExecution(BaseModel):
                         # > field value.
                         # TODO: What should the context object consist of?
                         # output[param.rstrip(".$")]=jp_parser.find(raw_input)[0].value
-                        pass
-                    elif value.startswith("$"):
+                        found_value = get_jsonpath_value(self.current_state, value[1:])
+                        output[param.rstrip(".$")] = found_value
+                        logger.debug(f"Parameter {value} resolved to " f"{found_value}")
+                    else:
                         # > If the field value begins with only one "$", the value MUST
                         # > be a Path. In this case, the Path is applied to the Payload
                         # > Template’s input and is the new field value.
-                        output[param.rstrip(".$")] = jp_parser.find(state_input)[
-                            0
-                        ].value
-                        logger.debug(
-                            f"Parameter {value} resolved to "
-                            f"{jp_parser.find(state_input)[0].value}"
-                        )
+                        found_value = get_jsonpath_value(state_input, value)
+                        output[param.rstrip(".$")] = found_value
+                        logger.debug(f"Parameter {value} resolved to " f"{found_value}")
                 else:
                     # > If the field value does not begin with "$", it MUST be an
                     # > Intrinsic Function. The interpreter invokes the Intrinsic

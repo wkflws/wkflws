@@ -1,8 +1,7 @@
 from typing import Any, Dict, Optional
 
-from jsonpath_ng import parse as jsonpath_parse  # type:ignore # no stubs
-
 from .token import Token
+from ..utils.jsonpath import get_jsonpath_value
 
 # Our runtime error class shadows the built-in RuntimeError exception.
 BuiltinRuntimeError = RuntimeError  # type: ignore
@@ -125,14 +124,14 @@ class Environment:
             raise RuntimeError(name, f"Undefined identifier '{name.lexeme}'.")
 
     def _get_jsonpath_value(self, name: Token) -> Any:
-        jp_parser = jsonpath_parse(name.lexeme)
+        if name.lexeme.startswith("$$"):
+            values = get_jsonpath_value(self.context_json, name.lexeme[1:])
+        else:
+            values = get_jsonpath_value(self.func_input_json, name.lexeme)
 
-        try:
-            if name.lexeme.startswith("$$"):
-                return jp_parser.find(self.context_json)[0].value
-            else:
-                return jp_parser.find(self.func_input_json)[0].value
-        except IndexError:
+        if len(values) == 0:
             raise RuntimeError(
                 name, f"JSON path selector value not found '{name.lexeme}'."
             )
+
+        return values

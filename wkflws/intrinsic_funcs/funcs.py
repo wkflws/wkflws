@@ -84,13 +84,13 @@ def array_append(array: tuple[Any, ...], *values: Any) -> tuple[Any, ...]:
         array: The original array to modify.
         values: The value(s) to append to ``array``.
     """
-    array += tuple(values)
+    array += values
     return array
 
 
 @register(name="Array.Join", arity=2)
 def array_join(join_val: str, array: tuple[Any, ...]) -> str:
-    """Join all values of an array with the givin join_val.
+    r"""Join all values of an array with the given join_val.
 
     Args:
         join_val: the value to join the array by. (e.g. ``,`` or ``\n``.)
