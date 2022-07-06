@@ -3,13 +3,19 @@ import atexit
 from threading import Thread
 from typing import Optional
 
-import confluent_kafka
-
-
 from ..conf import settings
-from ..logging import logger
 from ..events import Event, Result
 from ..exceptions import WkflwConfigurationException
+from ..logging import logger
+
+if settings.KAFKA_HOST:
+    try:
+        import confluent_kafka  # type:ignore # no types defined.
+    except ImportError:
+        raise ImportError(
+            "Please install wkflws with the optional kafka module (pip install "
+            "wkflws[kafka]"
+        )
 
 
 class AsyncProducer:

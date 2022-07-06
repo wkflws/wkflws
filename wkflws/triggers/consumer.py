@@ -4,9 +4,6 @@ import functools
 import json
 from typing import Any, Awaitable, Callable, Optional
 
-import confluent_kafka  # type:ignore # no types defined.
-from confluent_kafka import KafkaError
-
 from ..conf import settings
 from ..events import Event
 from ..exceptions import (
@@ -16,6 +13,16 @@ from ..exceptions import (
 )
 from ..logging import logger
 from ..workflow import initialize_workflows
+
+if settings.KAFKA_HOST:
+    try:
+        import confluent_kafka  # type:ignore # no types defined.
+        from confluent_kafka import KafkaError  # type:ignore # if it isn't installed
+    except ImportError:
+        raise ImportError(
+            "Please install wkflws with the optional kafka module (pip install "
+            "wkflws[kafka]"
+        )
 
 
 class AsyncConsumer:
