@@ -146,18 +146,12 @@ async def execution_entry_point(
 
         sys.exit(completed_process.returncode)
 
+    raw_output = completed_process.stdout.decode("utf-8")
     # Process output
-    _output = json.loads(completed_process.stdout)
-    if "ResultPath" in workflow_execution.current_state:
-        # TODO: hacky
-        output_key = workflow_execution.current_state["ResultPath"].replace("$.", "")
-        if state_input is None:
-            output = {}
-        else:
-            output = json.loads(state_input)
-        output[output_key] = _output
-    else:
-        output = _output
+    output = await workflow_execution.get_processed_output(
+        raw_input_=state_input,
+        raw_output=raw_output,
+    )
 
     # Execute the next step.
     await workflow_execution.execute_next_state(output)

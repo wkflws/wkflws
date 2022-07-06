@@ -202,10 +202,16 @@ class WorkflowExecution(BaseModel):
         state_input: dict[str, Any],
     ):
         logger.debug(f"Executing 'Task' state type: '{self.current_state_name}'")
+
+        serialized_input = json.dumps(state_input)
+        logger.debug(f" > Task input: {serialized_input}")
+
         executor = self.executor_class()
         logger.debug(f"Using executor '{executor.__class__.__name__}'")
         await executor.execute(
-            state_name, workflow=self, state_input=json.dumps(state_input)
+            state_name,
+            workflow=self,
+            state_input=serialized_input,
         )
 
     async def state_process_choice(
@@ -337,11 +343,91 @@ class WorkflowExecution(BaseModel):
 
         return new_input
 
+    async def get_processed_output(
+        self,
+        *,
+        raw_input_: Optional[str],
+        raw_output: str,
+    ) -> dict[str, Any]:
+        """Process the output of a node for the input to the next node.
+
+        Args:
+            raw_input_: The original input of the 'current' node. This is used for
+                the ``ResultPath`` case.
+            raw_output: The raw output of the 'current' node. This value is parsed as
+                JSON and processed with ``ResultSelector`` and ``OutputPath``
+
+        Returns:
+            The effective output of this node's execution.
+        """
+        input_: dict[str, Any] = json.loads(raw_input_ or "{}")
+        output: dict[str, Any] = json.loads(raw_output)
+        logger.debug(f" > Output > Raw Input: '{json.dumps(input_)}")
+
+        if "ResultSelector" in self.current_state:
+            # > The value of "ResultSelector" MUST be a Payload Template, whose input is
+            # > the result, and whose payload replaces and becomes the effective result.
+            result_selector_parser = jsonpath_parse(
+                self.current_state["ResultSelector"]
+            )
+            output = result_selector_parser.find(output)[0].value
+
+            logger.debug(f" > Output > ResultSelector found: {json.dumps(output)}")
+
+        if "ResultPath" in self.current_state:
+            # > The value of "ResultPath" MUST be a Reference Path, which specifies the
+            # > raw input’s combination with or replacement by the state’s result.
+            result_path = str(self.current_state["ResultPath"])
+
+            if result_path.startswith("$$"):
+                # > The value of "ResultPath" MUST NOT begin with "$$"; i.e. it may not
+                # > be used to insert content into the Context Object.
+                raise WkflwExecutionException(
+                    f"ResultPath for {self.current_state_name} must not access the "
+                    "context object"
+                )
+            elif not result_path.startswith("$"):
+                raise WkflwExecutionException(
+                    f"ResultPath for {self.current_state_name} must be a JSONPath "
+                    "value."
+                )
+
+            p = jsonpath_parse(result_path)
+            # Python is pass-by-reference so the assignment is unnecesary with the way
+            # this function works but the docs state that it _returns_ the updated
+            # `data` arg.
+            output = p.update_or_create(input_, output)
+            logger.debug(f" > Output > ResultPath found: {json.dumps(output)}")
+
+        if "OutputPath" in self.current_state:
+            # > The value of "OutputPath" MUST be a Path, which is applied to the
+            # > state’s output after the application of ResultPath, producing the
+            # > effective output which serves as the raw input for the next state.
+
+            p = jsonpath_parse(self.current_state["OutputPath"])
+            # Again, Python is pass-by-reference so the assignment is unnecesary with
+            # the way this function works but the docs state that it _returns_ the
+            # updated `data` arg.
+            output = p.find(output, output)[0].value
+            logger.debug(f" > Output > OutputPath found: {json.dumps(output)}")
+
+        logger.debug(f" > Output: {json.dumps(output)}")
+        return output
+
     async def process_parameters(
         self,
         state: dict[str, Any],
         state_input: dict[str, Any],
     ) -> dict[str, Any]:
+        """Process the ``Parameters`` section of the ASL step.
+
+        Args:
+            state: The ``State`` definition.
+            state_input: The input for this tate (i.e output of the previous state).
+
+        Return:
+            The effective input for the node.
+        """
         if "Parameters" not in state:
             return state_input
 
