@@ -67,16 +67,13 @@ class WebhookTrigger(BaseTrigger):
 
     """
 
-    #: Defines the FastAPI listener for all webhooks.
+    #: Declare the global FastAPI listener for all webhooks. It is up to the developers
+    #: to ensure paths are unique across the project.
     app = FastAPI(
         redoc_url=None,
         docs_url=None,
         openapi_url=None,
     )
-
-    #: Declare the glbal FastAPI router for all webhooks. It is up to the developer to
-    #: ensure paths are unique across the project.
-    router = APIRouter()
 
     def __init__(
         self,
@@ -130,6 +127,8 @@ class WebhookTrigger(BaseTrigger):
             kafka_consumer_group=kafka_consumer_group,
         )
 
+        self.router = APIRouter()
+
         self.app.version = self.client_version
 
         @self.app.on_event("shutdown")
@@ -181,6 +180,7 @@ class WebhookTrigger(BaseTrigger):
         # find/replace the entire codebase.
         wkflws_webhook_route_wrapper.func = func  # type:ignore # attribute not found
 
+        logger.debug(f"Adding route '{path}' -> {func}")
         self.router.add_api_route(
             path,
             endpoint=wkflws_webhook_route_wrapper,
@@ -280,6 +280,7 @@ class WebhookTrigger(BaseTrigger):
             #
             # Also self.app is used instead of self.router because the app can add it's
             # own routes and we want to be aware of that.
+            logger.debug(f"Found {len(self.app.routes)} routes")
             routes: list[APIRoute] = self.app.routes  # type:ignore
             for route in routes:
                 func = route.endpoint

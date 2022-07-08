@@ -248,16 +248,25 @@ async def _cmd_trigger_start_listener(args: argparse.Namespace):
         logger.error("Workflow lookup class is undefined.")
         sys.exit(1)
 
-    try:
-        node = module_attribute_from_string(args.module)
-    except ModuleNotFoundError:
-        logger.error("The module provided cannot be imported.")
-        sys.exit(1)
-    except AttributeError:
-        logger.error("The node object provided could not be found.")
-        sys.exit(1)
+    nodes = []
+    for mod_path in args.modules:
+        try:
+            nodes.append(module_attribute_from_string(mod_path))
+            logger.debug(f"Imported '{mod_path}' as {nodes[-1]}")
+        except ModuleNotFoundError as e:
+            logger.debug("Exception", exc_info=e)
+            logger.error(f"The module '{mod_path}' cannot be imported.")
+            sys.exit(1)
+        except AttributeError as e:
+            logger.debug("Exception", exc_info=e)
+            logger.error(f"The node object '{mod_path}' could not be found.")
+            sys.exit(1)
 
-    await node.start_listener()
+    # asyncio.gather(*(node.start_listener() for node in nodes))
+
+    # There are only webhook listeners, and their routes are added to a global FastAPI
+    # app so only one listener needs to be started to listen on all routes.
+    await nodes[-1].start_listener()
 
 
 async def _cmd_trigger_start_processor(args: argparse.Namespace):
@@ -428,8 +437,9 @@ if __name__ == "__main__":
         help="start the trigger's listener daemon process",
     )
     trigger_start_listener_parser.add_argument(
-        "module",
-        help="module path to trigger object you wish to start.",
+        "modules",
+        nargs="+",
+        help="import paths of the trigger objects you wish to start.",
     )
     # trigger_start_parser.add_argument("--host", type=str, default="127.0.0.1")
     # trigger_start_parser.add_argument("--port", type=int, default=8000)
