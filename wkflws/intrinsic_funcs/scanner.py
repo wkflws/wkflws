@@ -78,6 +78,10 @@ class Scanner:
         """Process an entire string adding it to the token list."""
         while self.peek() != "'":
             self.advance()
+            if self.peek() == "\\" and self.peek(count=2) == "'":
+                # Skip an escaped apostrophe
+                self.advance()
+                self.advance()
 
             if self.at_end:
                 raise Exception(f"Unterminated string at {self.start}")
@@ -86,6 +90,10 @@ class Scanner:
 
         # extract the value between the two apostrophies.
         value = self.substr((self.start + 1), (self.current - 1) - self.start)
+
+        # Replace escaped apostrophies with an apostrophe so it is what the user
+        # intended.
+        value = value.replace("\\'", "'")
 
         # consume the closing apostrophy.
         # This is done after the string literal read and before the advance to ensure
@@ -278,6 +286,9 @@ class Scanner:
         Returns:
             The character at position ``count``.
         """
+        if count < 1:
+            raise ValueError("Peeking backward is unsupported.")
+
         next_char = ""
         for i in range(1, count + 1):
             next_char = self.source.read(1)

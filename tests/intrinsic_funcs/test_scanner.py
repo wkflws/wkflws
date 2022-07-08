@@ -228,6 +228,24 @@ def test_process_string():
     assert token.lexeme == "'Hello, World!'", "Token lexeme doesn't match expected."
 
 
+def test_process_string__escape_apostrophe():
+    # Test processing a string with an escaped apostrophe
+    source = "'I\\'m new here.'"
+    s = Scanner(source)
+
+    # Advance the cursor to mimic scan_token consuming the first quotation mark.
+    s.source.read(1)
+
+    s.process_string()
+
+    assert len(s.tokens) == 1, "Expecting one token."
+
+    token = s.tokens[0]
+    assert token.type == TokenType.STRING, "Expecting token type of STRING."
+    assert token.literal == "I'm new here.", "Token literal doesn't match expected."
+    assert token.lexeme == "'I\\'m new here.'", "Token lexeme doesn't match expected."
+
+
 def test_process_string__unicode():
     # Test processing a unicode string
     source = "'ハロー・ワールド'"
@@ -538,6 +556,14 @@ def test_peek__simple():
     assert (
         s.peek(count=10) == source[11]
     ), f"Expected twelfth character to be {source[11]}."
+
+
+def test_peek__backward():
+    source = 'States.Format("Hello, {}", "World!")'
+    s = Scanner(source)
+
+    with pytest.raises(ValueError, match="Peeking backward"):
+        s.peek(count=-1)
 
 
 def test_peek__past_end_of_string():
