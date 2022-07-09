@@ -84,7 +84,7 @@ class WebhookTrigger(BaseTrigger):
             tuple[
                 tuple[http_method, ...],
                 str,
-                Callable[[Request], Awaitable[Optional[Event]]],
+                Callable[[Request, Response], Awaitable[Optional[Event]]],
             ],
             ...,
         ],
