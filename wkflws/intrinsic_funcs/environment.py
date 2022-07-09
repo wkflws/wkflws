@@ -129,9 +129,9 @@ class Environment:
         else:
             values = get_jsonpath_value(self.func_input_json, name.lexeme)
 
-        if len(values) == 0:
-            raise RuntimeError(
-                name, f"JSON path selector value not found '{name.lexeme}'."
-            )
+        # if len(values) == 0:
+        #     raise RuntimeError(
+        #         name, f"JSON path selector value not found '{name.lexeme}'."
+        #     )
 
         return values
