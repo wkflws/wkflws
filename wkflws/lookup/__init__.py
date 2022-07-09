@@ -11,10 +11,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .conf import settings
-from .events import Event
-from .utils.execution import module_attribute_from_string
-from .workflow import WorkflowType
+from ..conf import settings
+from ..events import Event
+from ..utils.execution import module_attribute_from_string
+from ..workflow import WorkflowType
 
 
 class LookupBase:
