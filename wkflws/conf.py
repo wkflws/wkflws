@@ -20,7 +20,7 @@ class Settings(_BaseSettings):
 
     #: Define the class which looks up state-language workflows to execute based on an
     #: Event.
-    WORKFLOW_LOOKUP_CLASS: str = ""
+    WORKFLOW_LOOKUP_CLASS: str = "wkflws.lookup.filesystem.FileSystemLookup"
 
     #: Define the class to use when executing nodes.
     EXECUTOR_CLASS: str = "wkflws.executors.mp.MultiProcessExecutor"
