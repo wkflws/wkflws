@@ -75,15 +75,16 @@ class MultiProcessExecutor(BaseExecutor):
             "PATH": os.getenv("PATH", ""),
             "_WKFLWS_NODE_LOG_LEVEL": str(logger.getEffectiveLevel()),
         }
-        for env_var in env_var_allow_list:
-            if env_var in os.environ:
-                env[env_var] = os.environ[env_var]
 
         # A little hack to get the environment set up properly when
         # executed from within a pex.
         if os.getenv("PEX", False):
             env["PYTHONPATH"] = ":".join(sys.path)
             env_var_allow_list.append("PYTHONPATH")
+
+        for env_var in env_var_allow_list:
+            if env_var in os.environ:
+                env[env_var] = os.environ[env_var]
 
         subprocess.Popen(args=args, env=env)
 
