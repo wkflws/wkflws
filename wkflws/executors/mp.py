@@ -79,6 +79,12 @@ class MultiProcessExecutor(BaseExecutor):
             if env_var in os.environ:
                 env[env_var] = os.environ[env_var]
 
+        # A little hack to get the environment set up properly when
+        # executed from within a pex.
+        if os.getenv("PEX", False):
+            env["PYTHONPATH"] = ":".join(sys.path)
+            env_var_allow_list.append("PYTHONPATH")
+
         subprocess.Popen(args=args, env=env)
 
 

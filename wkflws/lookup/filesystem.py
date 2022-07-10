@@ -144,8 +144,6 @@ class FileSystemLookup(LookupBase):
         for state_name, state_definition in states:
             if "Resource" in state_definition:
                 node_id = state_definition["Resource"].split(".")[0]
-                print(f"> {node_id}")
                 retval[state_name] = self.credentials.get(node_id, {})
 
-        print(retval)
         return retval
