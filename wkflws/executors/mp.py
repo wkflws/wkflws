@@ -79,7 +79,9 @@ class MultiProcessExecutor(BaseExecutor):
         # A little hack to get the environment set up properly when
         # executed from within a pex.
         if os.getenv("PEX", False):
+            logger.debug("pex detected, Applying PYTHONPATH env")
             env["PYTHONPATH"] = ":".join(sys.path)
+            env_var_allow_list.append("PEX")
             env_var_allow_list.append("PYTHONPATH")
 
         for env_var in env_var_allow_list:
