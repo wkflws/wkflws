@@ -1,6 +1,10 @@
 from copy import deepcopy
 from typing import Any, Optional, Union
 
+# jsonpath is used for reading because it allows for detecting 'missing' expressions by
+# returning [[]] for valid empty arrays, whereas jsonpath_ng will return an empty array
+# for both a real empty array and an invalid expression.
+from jsonpath import JSONPath  # type:ignore # no stubs
 from jsonpath_ng.parser import JsonPathParser  # type:ignore # no stubs
 
 
@@ -17,14 +21,11 @@ def get_jsonpath_value(
     Return:
         The value for the provided expression.
     """
-    jparser = JsonPathParser()
-    parser = jparser.parse(jsonpath_expr)
-
-    result = parser.find(data)
-    r = tuple(v.value for v in result)
+    parser = JSONPath(jsonpath_expr)
+    result = parser.parse(data)
 
     try:
-        return r if len(r) > 1 else r[0]
+        return result if len(result) > 1 else result[0]
     except IndexError:
         raise ValueError(f"'{jsonpath_expr}' was not found") from None
 

@@ -124,14 +124,14 @@ class Environment:
             raise RuntimeError(name, f"Undefined identifier '{name.lexeme}'.")
 
     def _get_jsonpath_value(self, name: Token) -> Any:
-        if name.lexeme.startswith("$$"):
-            values = get_jsonpath_value(self.context_json, name.lexeme[1:])
-        else:
-            values = get_jsonpath_value(self.func_input_json, name.lexeme)
-
-        # if len(values) == 0:
-        #     raise RuntimeError(
-        #         name, f"JSON path selector value not found '{name.lexeme}'."
-        #     )
+        try:
+            if name.lexeme.startswith("$$"):
+                values = get_jsonpath_value(self.context_json, name.lexeme[1:])
+            else:
+                values = get_jsonpath_value(self.func_input_json, name.lexeme)
+        except ValueError:
+            raise RuntimeError(
+                name, f"JSON path selector value not found '{name.lexeme}'."
+            ) from None
 
         return values
