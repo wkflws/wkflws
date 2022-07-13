@@ -1,17 +1,19 @@
 from copy import deepcopy
 from typing import Any, Optional, Union
 
-# jsonpath is used for reading because it allows for detecting 'missing' expressions by
-# returning [[]] for valid empty arrays, whereas jsonpath_ng will return an empty array
-# for both a real empty array and an invalid expression.
-from jsonpath import JSONPath  # type:ignore # no stubs
-from jsonpath_ng.parser import JsonPathParser  # type:ignore # no stubs
+from jsonpath_ng.jsonpath import (  # type:ignore # no stubs
+    Child as _Child,
+    DatumInContext,
+    Root as _Root,
+    Slice as _Slice,
+)
+from jsonpath_ng.parser import parse  # type:ignore # no stubs
 
 
 def get_jsonpath_value(
     data: dict[str, Any],
     jsonpath_expr: str,
-) -> Union[Any, tuple[Any, ...]]:
+) -> Union[Any, list[Any]]:  # list returned because that's what JSON does
     """Parse a JSONPath expression and return the value from ``data``.
 
     Args:
@@ -21,13 +23,57 @@ def get_jsonpath_value(
     Return:
         The value for the provided expression.
     """
-    parser = JSONPath(jsonpath_expr)
-    result = parser.parse(data)
+    parser = parse(jsonpath_expr)
 
-    try:
-        return result if len(result) > 1 else result[0]
-    except IndexError:
-        raise ValueError(f"'{jsonpath_expr}' was not found") from None
+    # These parsers always return an array of something (strings, numbers, other arrays)
+    # or an empty array. It's difficult to determine what should be returned so the len
+    # extension is used to try to determine the intention.
+
+    result: list[DatumInContext] = parser.find(
+        data
+    )  # An array of `DatumInContext` objects.
+
+    # ### V1: Original silly hack
+
+    # try:
+    #     return tuple(r.value for r in result) if len(result) > 1 else result[0].value
+    # except IndexError:
+    #     return ()
+
+    # ### V2: Slightly smarter but still hacky hack
+
+    # If this is an array of stuff, just return the stuff.
+    # This happens with array slices such as [-2:]
+    if len(result) > 1:
+        return list(r.value for r in result)
+
+    if len(result) == 1:
+        # If the result isn't just a value it's safe to say it's of the correct type.
+        if isinstance(result[0].value, (dict, list)):
+            return result[0].value
+
+        # When the result is a value it's hard to tell if it was meant to be in an
+        # array. Here the parser tree is walked to see if any part of it is a slice.
+        c = parser
+        while True:
+            # If the right hand expression is a slice return an array
+            if isinstance(parser.right, _Slice):
+                return [
+                    result[0].value,
+                ]
+
+            elif isinstance(c, _Child):
+                # Next node
+                c = c.left
+                continue
+
+            elif isinstance(c, _Root):
+                # This was a value
+                return result[0].value
+
+    # Otherwise the result is an empty array. The library gives no difference to an
+    # invalid path and an empty slice so all that's left to do is return the result.
+    return list()
 
 
 def set_jsonpath_value(
@@ -54,8 +100,7 @@ def set_jsonpath_value(
     Return:
         The modified JSON.
     """
-    jparser = JsonPathParser()
-    parser = jparser.parse(jsonpath_expr)
+    parser = parse(jsonpath_expr)
 
     data_copy: Optional[dict[str, Any]] = None
     if use_copy:
