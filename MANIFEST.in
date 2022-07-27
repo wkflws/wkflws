@@ -1,0 +1,2 @@
+include wkflws/py.typed
+global‐exclude *.py[cod] __pycache__
