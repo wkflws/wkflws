@@ -4,6 +4,7 @@ This module executes each step as a new process on the same host. This can be us
 for development because the memory is separated similarly to a production multi-host
 setup.
 """
+import asyncio
 import json
 import os
 import shlex
@@ -14,7 +15,7 @@ from typing import Any, Optional
 
 from .base import BaseExecutor
 from ..exceptions import WkflwExecutionException, WkflwStateNotFoundError
-from ..logging import logger
+from ..logging import getLogger
 from ..workflow import WorkflowExecution
 
 # if this needs to be set then use a context instead
@@ -43,6 +44,9 @@ class MultiProcessExecutor(BaseExecutor):
         Returns:
             The raw output from stdout. This should be a JSON serialized payload.
         """
+        logger = getLogger("wkflws.executors.mp.MultiProcessExecutor.execute")
+        logger.info(f"Setting up for execution of {state_name}")
+
         try:
             state = workflow.workflow_definition["States"][state_name]
         except KeyError:
@@ -92,21 +96,28 @@ class MultiProcessExecutor(BaseExecutor):
             if env_var in os.environ:
                 env[env_var] = os.environ[env_var]
 
-        process = subprocess.Popen(
-            args=args,
-            env=env,
+        logger.debug(f"Executing {state_name} -> {args}")
+        # Executing the process asynchronously let's the gunicorn worker function.
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=subprocess.PIPE,
+            # stderr=None,
+            env=os.environ,
+            # check=True, # Raise exception if failure
         )
+        raw_output = ""
+        while True:
+            _output, _ = await process.communicate()
+            raw_output += _output.decode("utf-8")
 
-        try:
-            # Timeout set to 5 minutes, mimic AWS lambda
-            _output, _ = process.communicate(timeout=5 * 60)
-            raw_output = _output.decode("utf-8")
-        except subprocess.TimeoutExpired:
-            logger.error(f'Timeout exceeded while executing {" ".join(args)}')
-            process.kill()
-            out, _ = process.communicate()
-            raise
+            if process.returncode is not None:
+                break
+
+        logger.debug(
+            f"Execution of {state_name} complete (return code: {process.returncode})"
+        )
+        _output, _ = await process.communicate()
+        raw_output += _output.decode("utf-8")
 
         return raw_output
 
@@ -131,6 +142,7 @@ async def execution_entry_point(
     Returns:
         The raw output from stdout. This should be a serialized JSON payload.
     """
+    logger = getLogger("wkflws.executors.mp.execution_entry_point")
     if workflow_execution.current_state_name is None:
         logger.error(
             f"Undefined current state for resource {resource_path}. Unable to continue"
@@ -176,7 +188,7 @@ async def execution_entry_point(
 
 
 if __name__ == "__main__":
-    import asyncio
+    logger = getLogger("wkflws.executors.mp.__main__")
 
     try:
         resource_path: Optional[str] = sys.argv[1]

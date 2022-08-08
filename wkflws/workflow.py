@@ -283,13 +283,16 @@ class WorkflowExecution(BaseModel):
 
         executor = self.executor_class()
         logger.debug(f"Using executor '{executor.__class__.__name__}'")
-        output = await executor.execute(
-            state_name,
-            workflow=self,
-            state_input=state_input,
-        )
-        deserialized_output = json.loads(output)
-
+        try:
+            output = await executor.execute(
+                state_name,
+                workflow=self,
+                state_input=state_input,
+            )
+            deserialized_output = json.loads(output)
+        except Exception:
+            logger.exception(f"Exception found during execution of {state_name}...")
+            return {}
         return deserialized_output
 
     async def state_process_choice(
@@ -475,9 +478,6 @@ class WorkflowExecution(BaseModel):
         if input_ is None:
             input_ = {}
 
-        logger.debug(f" > Output > Raw Input ({type(input_)}): '{json.dumps(input_)}'")
-        logger.debug(f" > Output > Raw Output ({type(output)}): '{json.dumps(output)}'")
-
         if "ResultSelector" in self.current_state:
             # > The value of "ResultSelector" MUST be a Payload Template, whose input is
             # > the result, and whose payload replaces and becomes the effective result.
@@ -490,11 +490,11 @@ class WorkflowExecution(BaseModel):
             else:
                 # This is a work around for older workflows and should be removed when
                 # they no longer define a direct JSONPath
+                #
+                # See Also: https://github.com/awslabs/states-language/issues/23
                 output = get_jsonpath_value(
                     output, self.current_state["ResultSelector"]
                 )  # type:ignore
-
-            logger.debug(f" > Output > ResultSelector found: {json.dumps(output)}")
 
         output = await self.process_result_path(input_=input_, output=output)
 
@@ -503,10 +503,10 @@ class WorkflowExecution(BaseModel):
             # > state’s output after the application of ResultPath, producing the
             # > effective output which serves as the raw input for the next state.
 
-            output = get_jsonpath_value(output, self.current_state["OutputPath"])
-            logger.debug(f" > Output > OutputPath found: {json.dumps(output)}")
+            output = get_jsonpath_value(
+                output, self.current_state["OutputPath"]
+            )  # type:ignore
 
-        logger.debug(f" > Effective Output ({type(output)}): '{json.dumps(output)}'")
         return output
 
     async def process_result_path(
@@ -541,7 +541,7 @@ class WorkflowExecution(BaseModel):
                 create_if_missing=True,
                 use_copy=False,
             )
-            logger.debug(f" > Output > ResultPath found: {json.dumps(output)}")
+
         return output
 
     async def evaluate_payload_template(
