@@ -105,7 +105,7 @@ class MultiProcessExecutor(BaseExecutor):
         except subprocess.TimeoutExpired:
             logger.error(f'Timeout exceeded while executing {" ".join(args)}')
             process.kill()
-            # out, _ = process.communicate()
+            out, _ = process.communicate()
             raise
 
         return raw_output
