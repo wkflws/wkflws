@@ -1,5 +1,5 @@
 import abc
-from typing import Optional
+from typing import Any, Optional
 
 from ..workflow import WorkflowExecution
 
@@ -17,7 +17,7 @@ class BaseExecutor(abc.ABC):
         state_name: str,
         *,
         workflow: WorkflowExecution,
-        state_input: Optional[str],
+        state_input: Optional[dict[str, Any]],
     ):
         """Entry point for executing a workflow node.
 

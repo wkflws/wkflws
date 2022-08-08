@@ -31,7 +31,7 @@ WorkflowType = MappingProxyType[str, Any]
 class WorkflowExecution(BaseModel):
     """Describes the execution of a workflow and it's state."""
 
-    #: A unique string identifing this execution of the workflow.
+    #: A unique string identifying this execution of the workflow.
     execution_id: str
     #: the identifier for the workflow being executed (i.e. database primary key).
     workflow_id: str
@@ -42,7 +42,7 @@ class WorkflowExecution(BaseModel):
     #: Context by state that should be provided to each state as it is executed.
     state_context: dict[str, Any]
 
-    #: describes the start time of this exeution.
+    #: describes the start time of this execution.
     execution_start_time: datetime
 
     #: The name of the current state. If this is None then the workflow has not started.
@@ -72,6 +72,11 @@ class WorkflowExecution(BaseModel):
         await self.execute_state(self.current_state_name, state_input)
 
     def set_current_state_name(self, state_name: str):
+        """Set the current state to the provided name.
+
+        Args:
+            state_name: The name of the current state.
+        """
         if state_name not in self.workflow_definition["States"]:
             raise WkflwStateNotFoundError(
                 f"Cannot set current state to {state_name} because it was not found "
@@ -81,7 +86,13 @@ class WorkflowExecution(BaseModel):
         self.current_state_name = state_name
 
     async def execute_next_state(self, state_input: dict[str, Any]):
-        if self.current_state.get("End", False):  # TODO coerce bool
+        """Execute the state defined by ``Next`` for the current state.
+
+        Args:
+            state_input: The input to the next state (i.e. the output of the current
+                state)
+        """
+        if self.current_state.get("End", False):  # TODO: coerce boolean
             return  # nothing to do
 
         next_state = self.current_state.get("Next", None)
@@ -95,18 +106,72 @@ class WorkflowExecution(BaseModel):
         await self.execute_state(self.current_state_name, state_input)
 
     async def execute_state(self, state_name: str, state_input: dict[str, Any]):
+        """Execute the state defined by ``state_name``.
+
+        Args:
+            state_name: The name of the state to execute.
+            state_input: The input for the state (i.e. output of another state.)
+        """
         logger.debug(f"Processing state {state_name}")
         state = self.get_state(state_name)
 
+        processed_input = await self.get_processed_state_input(
+            self.current_state,
+            state_input,
+        )
+
+        output = {}
         match state["Type"]:
             case "Task":
-                await self.state_process_task(state_name, state_input)
+                raw_output = await self.state_process_task(
+                    state_name,
+                    processed_input,
+                )
+                output = await self.get_processed_output(
+                    input_=state_input,
+                    output=raw_output,
+                )
             case "Choice":
+                # TODO: Choice only supports InputPath or OutputPath
                 await self.state_process_choice(state, state_input)
+                output = state_input
             case "Pass":
-                await self.execute_next_state(state_input)
+                # > The Pass State (identified by "Type":"Pass") by default passes its
+                # > input to its output, performing no work.
+                # >
+                # > A Pass State MAY have a field named "Result". If present, its value
+                # > is treated as the output of a virtual task, and placed as prescribed
+                # > by the "ResultPath" field, if any, to be passed on to the next
+                # > state. If "Result" is not provided, the output is the input. Thus if
+                # > neither "Result" nor "ResultPath" are provided, the Pass State
+                # > copies its input through to its output.
+                if "Result" in self.current_state:
+                    # I'm taking some liberty here by assuming ``Result`` is a Payload
+                    # Template. It is not specified one way or the other in the spec.
+                    #
+                    # > "Result" means the JSON text that a state generates, for example
+                    # > from external code invoked by a Task State, the combined result
+                    # > of the branches in a Parallel or Map State, or the Value of the
+                    # > "Result" field in a Pass State.
+                    result = await self.evaluate_payload_template(
+                        self.current_state["Result"],
+                        processed_input,
+                    )
+
+                    output = await self.process_result_path(
+                        input_=processed_input,
+                        output=result,
+                    )
+                    logger.debug(
+                        f" > Effective Output ({type(output)}): '{json.dumps(output)}'"
+                    )
+                else:
+                    output = state_input
+
             case _:
                 raise WkflwExecutionException(f'Unknown state type: {state["Type"]}')
+
+        await self.execute_next_state(output)
 
     def get_state(self, state_name: str) -> dict[str, Any]:
         """Return the requested state."""
@@ -201,25 +266,44 @@ class WorkflowExecution(BaseModel):
         self,
         state_name: str,
         state_input: dict[str, Any],
-    ):
+    ) -> dict[str, Any]:
+        """Process a ``Task`` state type.
+
+        Args:
+            state_name: The name of the Task state to execute.
+            state_input: The input to the Task state. (i.e. output of the previous
+                state.)
+
+        Return:
+           The deserialized output from the task
+        """
         logger.debug(f"Executing 'Task' state type: '{self.current_state_name}'")
 
-        serialized_input = json.dumps(state_input)
-        logger.debug(f" > Task input: {serialized_input}")
+        logger.debug(f" > Task input ({type(state_input)}): {state_input}")
 
         executor = self.executor_class()
         logger.debug(f"Using executor '{executor.__class__.__name__}'")
-        await executor.execute(
+        output = await executor.execute(
             state_name,
             workflow=self,
-            state_input=serialized_input,
+            state_input=state_input,
         )
+        deserialized_output = json.loads(output)
+
+        return deserialized_output
 
     async def state_process_choice(
         self,
         state: dict[str, Any],
         state_input: dict[str, Any],
     ):
+        """Process a ``Choice`` state type.
+
+        Args:
+            state_name: The defintion of the Choice state to execute.
+            state_input: The input to the Task state. (i.e. output of the previous
+                state.)
+        """
         next_state_name = state.get("Default", None)
 
         for i, choice in enumerate(state["Choices"]):
@@ -246,6 +330,12 @@ class WorkflowExecution(BaseModel):
         branch: dict[str, Any],
         state_input: dict[str, Any],
     ) -> bool:
+        """Evaluate a branch of a ``Choice`` state.
+
+        Args:
+            branch: The branch to evaluate
+            state_input: The input to the Choice state. Used during evaluation.
+        """
         if "And" in branch:
             for and_branch in branch["And"]:
                 and_result = self.evaluate_choice_branch(
@@ -269,7 +359,7 @@ class WorkflowExecution(BaseModel):
             if jsonpath_expr.startswith("$$"):
                 jsonpath_expr = jsonpath_expr[1:]
 
-            value: Union[str, tuple[Any, ...]] = get_jsonpath_value(
+            value: Union[str, list[Any]] = get_jsonpath_value(
                 state_input, jsonpath_expr
             )
         except ValueError:
@@ -335,6 +425,16 @@ class WorkflowExecution(BaseModel):
         state: dict[str, Any],
         original_state_input: dict[str, Any],
     ) -> dict[str, Any]:
+        """Process the effective input for the state.
+
+        Args:
+            state: The ``State`` definition.
+            original_state_input: The unprocessed input to this tate (i.e output of the
+                previous state).
+
+        Return:
+            The effective input for the node.
+        """
         # The value of "InputPath" MUST be a Path, which is applied to a State’s raw
         # input to select some or all of it; that selection is used by the state, for
         # example in passing to Resources in Task States and Choices selectors in Choice
@@ -346,38 +446,75 @@ class WorkflowExecution(BaseModel):
         # whose input is the result of applying the InputPath to the raw input. If the
         # "Parameters" field is provided, its payload, after the extraction and
         # embedding, becomes the effective input.
-        new_input = await self.process_parameters(state, new_input)
+        if "Parameters" not in state:
+            return new_input
+
+        payload_template = state["Parameters"]
+
+        new_input = await self.evaluate_payload_template(payload_template, new_input)
 
         return new_input
 
     async def get_processed_output(
         self,
         *,
-        raw_input_: Optional[str],
-        raw_output: str,
+        input_: Optional[dict[str, Any]],
+        output: dict[str, Any],
     ) -> dict[str, Any]:
         """Process the output of a node for the input to the next node.
 
         Args:
-            raw_input_: The original input of the 'current' node. This is used for
+            input_: The original input of the 'current' node. This is used for
                 the ``ResultPath`` case.
-            raw_output: The raw output of the 'current' node. This value is parsed as
+            output: The raw output of the 'current' node. This value is parsed as
                 JSON and processed with ``ResultSelector`` and ``OutputPath``
 
         Returns:
             The effective output of this node's execution.
         """
-        input_: dict[str, Any] = json.loads(raw_input_ or "{}")
-        output: Any = json.loads(raw_output)  # dict[str, Any]
-        logger.debug(f" > Output > Raw Input: '{json.dumps(input_)}")
+        if input_ is None:
+            input_ = {}
+
+        logger.debug(f" > Output > Raw Input ({type(input_)}): '{json.dumps(input_)}'")
+        logger.debug(f" > Output > Raw Output ({type(output)}): '{json.dumps(output)}'")
 
         if "ResultSelector" in self.current_state:
             # > The value of "ResultSelector" MUST be a Payload Template, whose input is
             # > the result, and whose payload replaces and becomes the effective result.
-            output = get_jsonpath_value(output, self.current_state["ResultSelector"])
+
+            if isinstance(output, dict):
+                output = await self.evaluate_payload_template(
+                    self.current_state["ResultSelector"],
+                    input_,
+                )
+            else:
+                # This is a work around for older workflows and should be removed when
+                # they no longer define a direct JSONPath
+                output = get_jsonpath_value(
+                    output, self.current_state["ResultSelector"]
+                )  # type:ignore
 
             logger.debug(f" > Output > ResultSelector found: {json.dumps(output)}")
 
+        output = await self.process_result_path(input_=input_, output=output)
+
+        if "OutputPath" in self.current_state:
+            # > The value of "OutputPath" MUST be a Path, which is applied to the
+            # > state’s output after the application of ResultPath, producing the
+            # > effective output which serves as the raw input for the next state.
+
+            output = get_jsonpath_value(output, self.current_state["OutputPath"])
+            logger.debug(f" > Output > OutputPath found: {json.dumps(output)}")
+
+        logger.debug(f" > Effective Output ({type(output)}): '{json.dumps(output)}'")
+        return output
+
+    async def process_result_path(
+        self,
+        *,
+        input_: Optional[dict[str, Any]],
+        output: dict[str, Any],
+    ):
         if "ResultPath" in self.current_state:
             # > The value of "ResultPath" MUST be a Reference Path, which specifies the
             # > raw input’s combination with or replacement by the state’s result.
@@ -398,43 +535,29 @@ class WorkflowExecution(BaseModel):
 
             # Disable use of copy because the original is no longer needed.
             output = set_jsonpath_value(
-                input_,
+                input_ or {},
                 output,
                 result_path,
                 create_if_missing=True,
                 use_copy=False,
             )
             logger.debug(f" > Output > ResultPath found: {json.dumps(output)}")
-
-        if "OutputPath" in self.current_state:
-            # > The value of "OutputPath" MUST be a Path, which is applied to the
-            # > state’s output after the application of ResultPath, producing the
-            # > effective output which serves as the raw input for the next state.
-
-            output = get_jsonpath_value(output, self.current_state["OutputPath"])
-            logger.debug(f" > Output > OutputPath found: {json.dumps(output)}")
-
-        logger.debug(f" > Output: {json.dumps(output)}")
         return output
 
-    async def process_parameters(
+    async def evaluate_payload_template(
         self,
-        state: dict[str, Any],
+        payload_template: dict[str, Any],
         state_input: dict[str, Any],
     ) -> dict[str, Any]:
-        """Process the ``Parameters`` section of the ASL step.
+        """Process a Payload template.
 
         Args:
-            state: The ``State`` definition.
-            state_input: The input for this tate (i.e output of the previous state).
+            payload_template: The payload template to evaluate.
+            state_input: The input to the state. Used for the ``$`` values.
 
         Return:
-            The effective input for the node.
+            The effective result of the payload
         """
-        if "Parameters" not in state:
-            return state_input
-
-        payload_template = state["Parameters"]
         output: dict[str, Any] = {}
 
         for param, value in payload_template.items():

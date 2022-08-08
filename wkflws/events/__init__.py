@@ -1,6 +1,16 @@
+"""Describes raw events produced by a trigger node
+
+When a trigger node's listener recieves an arbitrary payload from a source it must
+return an :class:`Event` with the data as in-tact as possible.
+"""
 from dataclasses import asdict, dataclass, field
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Union
+
+
+def _json_default_factory() -> dict[str, Any]:
+    # used for the type checker
+    return {}
 
 
 @dataclass
@@ -11,9 +21,11 @@ class Event:
     #: generated. This can be used for tracing log messages. (Maps to Kafka key)
     identifier: str
     #: A dictionary containing metadata about the event.
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    #: A JSON serializable dictionary containing the payload of the event.
-    data: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    #: A JSON serializable value containing the payload of the event.
+    data: Union[list[dict[str, Any]], dict[str, Any]] = field(
+        default_factory=_json_default_factory
+    )
 
     def asdict(self) -> dict[str, Any]:
         """Create a dictionary representation of this object."""

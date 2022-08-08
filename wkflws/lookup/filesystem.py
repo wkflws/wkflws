@@ -65,7 +65,12 @@ class FileSystemLookup(LookupBase):
                     logger.debug(f"Loading '{file_path}' as {identifier}")
 
                     with open(file_path, "r") as fh:
-                        j = json.load(fh)
+                        try:
+                            j = json.load(fh)
+                        except json.decoder.JSONDecodeError as e:
+                            raise json.decoder.JSONDecodeError(
+                                f"Error parsing ASL", e.doc, e.pos
+                            ) from None
                         try:
                             # Use the trigger node as the key for a quick lookup
                             key = j["States"][j["StartAt"]]["Resource"]
@@ -85,8 +90,11 @@ class FileSystemLookup(LookupBase):
                                 definition=j,
                             )
                         )
-        with open(os.path.join(os.getcwd(), "credentials.json")) as fh:
-            self.credentials = json.load(fh)
+        try:
+            with open(os.path.join(os.getcwd(), "credentials.json")) as fh:
+                self.credentials = json.load(fh)
+        except FileNotFoundError:
+            self.credentials = {}
 
     async def get_workflows(
         self,

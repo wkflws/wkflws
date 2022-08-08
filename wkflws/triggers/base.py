@@ -1,6 +1,6 @@
 import abc
 import asyncio
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from .producer import AsyncProducer
 from ..events import Event
@@ -12,7 +12,7 @@ from ..workflow import initialize_workflows
 class BaseTrigger(abc.ABC):
     """Common code useful for any trigger subclass.
 
-    Triggers are designed to be two separate pieces with a event bus (Kafka) inbetween
+    Triggers are designed to be two separate pieces with a event bus (Kafka) in between
     them.
     """
 
@@ -22,7 +22,10 @@ class BaseTrigger(abc.ABC):
         client_identifier: str,
         client_version: str,
         process_func: Callable[
-            [Event], Awaitable[tuple[Optional[str], dict[str, Any]]]
+            [Event],
+            Awaitable[
+                tuple[Optional[str], Union[list[dict[str, Any]], dict[str, Any]]]
+            ],
         ],
         kafka_topic: Optional[str] = None,
         kafka_consumer_group: Optional[str] = None,
@@ -39,7 +42,7 @@ class BaseTrigger(abc.ABC):
             process_func: A callable which accepts the data returned by ``accept_func``
                 and includes any business logic necessary to begin the workflow. (This
                 is the consumer portion of the trigger.)
-            kafka_topic: The Kafka topic to publish and recieve eventss on. If this
+            kafka_topic: The Kafka topic to publish and receive events on. If this
                 value is ``None`` then the data will be passed directly to the data
                 processing function (i.e. in memory). If this value is defined then
                 ``kafka_consumer_group`` must also be defined.

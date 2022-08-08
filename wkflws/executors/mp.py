@@ -9,7 +9,7 @@ import os
 import shlex
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 
 from .base import BaseExecutor
@@ -36,9 +36,13 @@ class MultiProcessExecutor(BaseExecutor):
         state_name: str,
         *,
         workflow: WorkflowExecution,
-        state_input: Optional[str],
-    ):
-        """Run ``state`` as defined in ``workflow``."""
+        state_input: Optional[dict[str, Any]],
+    ) -> str:
+        """Run ``state`` as defined in ``workflow``.
+
+        Returns:
+            The raw output from stdout. This should be a JSON serialized payload.
+        """
         try:
             state = workflow.workflow_definition["States"][state_name]
         except KeyError:
@@ -63,7 +67,7 @@ class MultiProcessExecutor(BaseExecutor):
         ]
 
         if state_input is not None:
-            args.append(state_input)
+            args.append(json.dumps(state_input))
 
         # Provide a limited environment to the subprocess.
         env_var_allow_list = [  # TODO: how to make this dynamic?
@@ -88,18 +92,34 @@ class MultiProcessExecutor(BaseExecutor):
             if env_var in os.environ:
                 env[env_var] = os.environ[env_var]
 
-        subprocess.Popen(args=args, env=env)
+        process = subprocess.Popen(
+            args=args,
+            env=env,
+            stdout=subprocess.PIPE,
+        )
+
+        try:
+            # Timeout set to 5 minutes, mimic AWS lambda
+            _output, _ = process.communicate(timeout=5 * 60)
+            raw_output = _output.decode("utf-8")
+        except subprocess.TimeoutExpired:
+            logger.error(f'Timeout exceeded while executing {" ".join(args)}')
+            process.kill()
+            # out, _ = process.communicate()
+            raise
+
+        return raw_output
 
 
 async def execution_entry_point(
     resource_path: str,
     workflow_execution: WorkflowExecution,
     state_input: Optional[str] = None,
-):
+) -> str:
     """Entry point to the node subprocess.
 
     This function serves as an entry point to the sub-process which executes a
-    node. This funciton is responsible for preparing the input, context, and output for
+    node. This function is responsible for preparing the input, context, and output for
     the actual node.
 
     Args:
@@ -107,8 +127,9 @@ async def execution_entry_point(
             command-line command to execute on a shell.
         workflow_execution: The entire workflow execution definition so that it can be
             used during data preparation.
-        state_input: The input to this node's execution (i.e. the output from the
-            previous node.)
+        state_input: The processed input to this node's execution.
+    Returns:
+        The raw output from stdout. This should be a serialized JSON payload.
     """
     if workflow_execution.current_state_name is None:
         logger.error(
@@ -120,15 +141,10 @@ async def execution_entry_point(
         f"Executing {resource_path} for State {workflow_execution.current_state_name}."
     )
 
-    # Process Parameters, etc
-    new_state_input = await workflow_execution.get_processed_state_input(
-        workflow_execution.current_state,
-        json.loads(state_input or "{}"),
-    )
-    # Execute resource_path recieving output
+    # Execute resource_path receiving output
     args = shlex.split(resource_path)
     if state_input is not None:
-        args.append(json.dumps(new_state_input))
+        args.append(state_input)  # already serialized by the execute() method
     else:
         args.append("{}")
 
@@ -156,14 +172,7 @@ async def execution_entry_point(
         sys.exit(completed_process.returncode)
 
     raw_output = completed_process.stdout.decode("utf-8")
-    # Process output
-    output = await workflow_execution.get_processed_output(
-        raw_input_=state_input,
-        raw_output=raw_output,
-    )
-
-    # Execute the next step.
-    await workflow_execution.execute_next_state(output)
+    return raw_output
 
 
 if __name__ == "__main__":
@@ -201,7 +210,12 @@ if __name__ == "__main__":
     # Reset the log level for this new process's logger. Default is INFO
     logger.setLevel(int(os.getenv("_WKFLWS_NODE_LOG_LEVEL", 20)))
 
-    asyncio.run(execution_entry_point(resource_path, workflow_execution, state_input))
+    output = asyncio.run(
+        execution_entry_point(resource_path, workflow_execution, state_input)
+    )
+
+    # Display the output for the `execute()` method to grab
+    print(output)
 
     # Non-async if needed:
     # asyncio.get_event_loop().run_until_complete(func(context, raw_input))
@@ -220,15 +234,3 @@ if __name__ == "__main__":
 #         )
 #         process.start()
 #         process.join()
-
-
-# def entry(resource_path: str, context, raw_input):
-#     """Entrypoint for executing a step.
-
-#     This function processes the InputPath, Parameters, ResultSelector, ResultPath
-#     and OutputPath from the state definition as well as calls the resource.
-#     """
-#     import asyncio
-
-#     func = module_attribute_from_string(resource_path)
-#     asyncio.run(func(context, raw_input))

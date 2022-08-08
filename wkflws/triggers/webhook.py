@@ -1,5 +1,5 @@
 import multiprocessing
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 try:
     from fastapi import (
@@ -7,7 +7,7 @@ try:
         FastAPI,
         Response as FAPIResponse,
         Request as FAPIRequest,
-        status,  # This is used as a convenience import
+        status as status,  # noqa This is used as a convenience import
     )
     import gunicorn.app.base  # type:ignore  # no stubs
     import uvicorn  # type:ignore  # no stubs  # noqa - worker imported by string
@@ -89,7 +89,10 @@ class WebhookTrigger(BaseTrigger):
             ...,
         ],
         process_func: Callable[
-            [Event], Awaitable[tuple[Optional[str], dict[str, Any]]]
+            [Event],
+            Awaitable[
+                tuple[Optional[str], Union[list[dict[str, Any]], dict[str, Any]]]
+            ],
         ],
         kafka_topic: Optional[str] = None,
         kafka_consumer_group: Optional[str] = None,
