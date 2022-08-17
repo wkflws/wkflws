@@ -14,9 +14,14 @@ from typing import Any, Optional
 
 
 from .base import BaseExecutor
-from ..exceptions import WkflwExecutionException, WkflwStateNotFoundError
+from ..exceptions import (
+    WkflwExecutionException,
+    WkflwStateError,
+    WkflwStateNotFoundError,
+)
 from ..logging import getLogger
 from ..workflow import WorkflowExecution
+from ..utils.encoder import WkflwsJSONEncoder
 
 # if this needs to be set then use a context instead
 # of global so it doesn't crash setting it a second time.
@@ -71,7 +76,7 @@ class MultiProcessExecutor(BaseExecutor):
         ]
 
         if state_input is not None:
-            args.append(json.dumps(state_input))
+            args.append(json.dumps(state_input, cls=WkflwsJSONEncoder))
 
         # Provide a limited environment to the subprocess.
         env_var_allow_list = [  # TODO: how to make this dynamic?
@@ -116,6 +121,13 @@ class MultiProcessExecutor(BaseExecutor):
         logger.debug(
             f"Execution of {state_name} complete (return code: {process.returncode})"
         )
+
+        if process.returncode != 0:
+            raise WkflwStateError(
+                f"Execution of {state_name} failed. Process returned error code: "
+                f"{process.returncode}."
+            )
+
         _output, _ = await process.communicate()
         raw_output += _output.decode("utf-8")
 
@@ -174,10 +186,8 @@ async def execution_entry_point(
     )
 
     if completed_process.returncode != 0:
-        logger.error(
-            f"State {workflow_execution.current_state_name} exited with error "
-            f"(returncode: {completed_process.returncode})."
-        )
+        # Error is logged in the calling execute() statement.
+
         if completed_process.stderr is not None:
             logger.error(completed_process.stderr)
 
