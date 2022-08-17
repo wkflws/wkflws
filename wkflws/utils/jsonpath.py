@@ -1,13 +1,13 @@
 from copy import deepcopy
 from typing import Any, Optional, Union
 
+from jsonpath_ng.ext.parser import parse  # type:ignore # no stubs
 from jsonpath_ng.jsonpath import (  # type:ignore # no stubs
     Child as _Child,
     DatumInContext,
     Root as _Root,
     Slice as _Slice,
 )
-from jsonpath_ng.parser import parse  # type:ignore # no stubs
 
 
 def get_jsonpath_value(
