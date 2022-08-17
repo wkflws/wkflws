@@ -105,6 +105,12 @@ def string_trim(value: str) -> str:
     return value.strip()
 
 
+@register(name="String.Split", arity=2)
+def string_trim(value: str, split_on: str) -> list[str]:
+    """Split the string ``value`` by ``split_on``."""
+    return value.split(split_on)
+
+
 @register(name="Cast.ToNumber", arity=1)
 def to_number(value: str) -> Decimal:
     """Typecast a string to a number."""
