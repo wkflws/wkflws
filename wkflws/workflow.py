@@ -593,7 +593,13 @@ class WorkflowExecution(BaseModel):
                         value, state_input
                     )
             else:
-                output[param] = value
+                if isinstance(value, dict):
+                    output[param] = await self.evaluate_payload_template(
+                        value,
+                        state_input,
+                    )
+                else:
+                    output[param] = value
 
         return output
 
