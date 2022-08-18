@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
 import json
+import random
 from typing import Any, List, Optional, TYPE_CHECKING
 
 from .environment import Environment
@@ -106,9 +107,25 @@ def string_trim(value: str) -> str:
 
 
 @register(name="String.Split", arity=2)
-def string_trim(value: str, split_on: str) -> list[str]:
+def string_split(value: str, split_on: str) -> list[str]:
     """Split the string ``value`` by ``split_on``."""
     return value.split(split_on)
+
+
+@register(name="String.Random", arity=None)
+def string_random(
+    length: int = 5,
+    chars: str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~",
+) -> str:
+    """Generate a pseudo-random string.
+
+    .. note:
+
+       The default characters come from the suggested values for the PKCE code
+       verifier.
+    """
+    # length is typecast to int because workflows uses Decimal for number types.
+    return "".join(random.choice(chars) for _ in range(int(length)))
 
 
 @register(name="Cast.ToNumber", arity=1)
