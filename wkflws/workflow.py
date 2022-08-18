@@ -360,11 +360,15 @@ class WorkflowExecution(BaseModel):
         try:
             jsonpath_expr = branch["Variable"]
             if jsonpath_expr.startswith("$$"):
-                jsonpath_expr = jsonpath_expr[1:]
-
-            value: Union[str, list[Any]] = get_jsonpath_value(
-                state_input, jsonpath_expr
-            )
+                value: Union[str, list[Any]] = get_jsonpath_value(
+                    self.current_state, jsonpath_expr[1:], raise_on_missing=True
+                )
+            else:
+                value: Union[  # type:ignore # `value` already defined
+                    str, list[Any]
+                ] = get_jsonpath_value(
+                    state_input, jsonpath_expr, raise_on_missing=True
+                )
         except ValueError:
             _is_value_present = False
             # This is done for the type checker. It's unused for IsPresent and an

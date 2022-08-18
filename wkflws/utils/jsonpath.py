@@ -13,12 +13,14 @@ from jsonpath_ng.jsonpath import (  # type:ignore # no stubs
 def get_jsonpath_value(
     data: dict[str, Any],
     jsonpath_expr: str,
+    raise_on_missing: bool = False,
 ) -> Union[Any, list[Any]]:  # list returned because that's what JSON does
     """Parse a JSONPath expression and return the value from ``data``.
 
     Args:
         data: The context data to search
         jsonpath_expr: The JSONPath expression.
+        raise_on_missing: Raise a ValueError if the value is (probably) missing.
 
     Return:
         The value for the provided expression.
@@ -73,6 +75,8 @@ def get_jsonpath_value(
 
     # Otherwise the result is an empty array. The library gives no difference to an
     # invalid path and an empty slice so all that's left to do is return the result.
+    if raise_on_missing:
+        raise ValueError(f"{jsonpath_expr} not found.")
     return list()
 
 
