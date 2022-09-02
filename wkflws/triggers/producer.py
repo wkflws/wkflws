@@ -7,6 +7,7 @@ from ..conf import settings
 from ..events import Event, Result
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
+from ..trace import tracer
 
 if settings.KAFKA_HOST:
     try:
@@ -97,33 +98,42 @@ class AsyncProducer:
         result = self._loop.create_future()
 
         def ack(err, msg):
-            if err:
-                self._loop.call_soon_threadsafe(
-                    result.set_exception, confluent_kafka.KafkaException(err)
-                )
-            else:
-                self._loop.call_soon_threadsafe(
-                    result.set_result,
-                    Result(
-                        key=msg.key(),
-                        offset=msg.offset,
-                        latency=msg.latency,
-                        topic=msg.topic,
-                        # TODO: i think message is correct here. (not event)
-                        message=msg.value,
-                    ),
-                )
+            with tracer.start_as_current_span(
+                "wkflws.triggers.producer.Producer.produce.ack"
+            ) as span:
+                if err:
+                    self._loop.call_soon_threadsafe(
+                        result.set_exception, confluent_kafka.KafkaException(err)
+                    )
+                else:
+                    self._loop.call_soon_threadsafe(
+                        result.set_result,
+                        Result(
+                            key=msg.key(),
+                            offset=msg.offset,
+                            latency=msg.latency,
+                            topic=msg.topic,
+                            # TODO: i think message is correct here. (not event)
+                            message=msg.value,
+                        ),
+                    )
 
-        # Asynchronously pushes the event to Kafka. ``poll`` will call the value of
-        # ``on_delivery`` when delivering the event succeeds or fails.
-        self._producer.produce(
-            topic=topic or self.default_topic,
-            value=event.asjson().encode("utf-8"),
-            key=key,
-            on_delivery=ack,
-        )
+        topic = topic or self.default_topic
+        with tracer.start_as_current_span(
+            "wkflws.triggers.producer.Producer.produce"
+        ) as span:
+            span.set_attribute("kafka.topic", topic)
+            span.set_attribute("kafka.key", key)
+            # Asynchronously pushes the event to Kafka. ``poll`` will call the value of
+            # ``on_delivery`` when delivering the event succeeds or fails.
+            self._producer.produce(
+                topic=topic,
+                value=event.asjson().encode("utf-8"),
+                key=key,
+                on_delivery=ack,
+            )
 
-        return result
+            return result
 
     def close(self):
         """Disconnects from Kafka and stops the thread.

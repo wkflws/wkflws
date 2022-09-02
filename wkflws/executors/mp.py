@@ -12,6 +12,7 @@ import subprocess
 import sys
 from typing import Any, Optional
 
+from opentelemetry import trace
 
 from .base import BaseExecutor
 from ..exceptions import (
@@ -20,8 +21,9 @@ from ..exceptions import (
     WkflwStateNotFoundError,
 )
 from ..logging import getLogger
-from ..workflow import WorkflowExecution
+from ..trace import tracer
 from ..utils.encoder import WkflwsJSONEncoder
+from ..workflow import WorkflowExecution
 
 # if this needs to be set then use a context instead
 # of global so it doesn't crash setting it a second time.
@@ -49,95 +51,118 @@ class MultiProcessExecutor(BaseExecutor):
         Returns:
             The raw output from stdout. This should be a JSON serialized payload.
         """
-        logger = getLogger("wkflws.executors.mp.MultiProcessExecutor.execute")
-        logger.info(f"Setting up for execution of {state_name}")
+        with tracer.start_as_current_span(
+            f"{__name__}.MultiProcessExecutor.execute"
+        ) as span:
+            span.set_attribute("wkflws.state_name", state_name)
 
-        try:
-            state = workflow.workflow_definition["States"][state_name]
-        except KeyError:
-            raise WkflwStateNotFoundError(f"Workflow state '{state_name}` not found.")
+            # logger = getLogger("wkflws.executors.mp.MultiProcessExecutor.execute")
+            # logger.info(f"Setting up for execution of {state_name}")
 
-        resource_path = state.get("Resource", None)
+            try:
+                state = workflow.workflow_definition["States"][state_name]
+            except KeyError:
+                raise WkflwStateNotFoundError(
+                    f"Workflow state '{state_name}` not found."
+                )
 
-        if resource_path is None:
-            raise WkflwExecutionException(
-                f"Workflow State '{state_name}' has no defined resource"
+            resource_path = state.get("Resource", None)
+
+            if resource_path is None:
+                raise WkflwExecutionException(
+                    f"Workflow State '{state_name}' has no defined resource"
+                )
+
+            from opentelemetry.trace.propagation.tracecontext import (
+                TraceContextTextMapPropagator,
             )
 
-        # Execute a helper function detached, which loads the workflow
-        # information, state_input, executing `Resource` as a child
-        # process to collect it's output.
-        args = [
-            "python",
-            "-m",
-            "wkflws.executors.mp",
-            resource_path,
-            workflow.json(),
-        ]
+            span_ctx: dict[str, str] = {}
+            TraceContextTextMapPropagator().inject(span_ctx)
 
-        if state_input is not None:
-            args.append(json.dumps(state_input, cls=WkflwsJSONEncoder))
+            # Execute a helper function detached, which loads the workflow
+            # information, state_input, executing `Resource` as a child
+            # process to collect it's output.
+            args = [
+                "python",
+                "-m",
+                "wkflws.executors.mp",
+                resource_path,
+                workflow.json(separators=(",", ":")),
+            ]
 
-        # Provide a limited environment to the subprocess.
-        env_var_allow_list = [  # TODO: how to make this dynamic?
-            "VOYAGE_PLATFORM_API_KEY",
-            "LIVERECOVER_API_KEY",
-            "VOYAGE_PLATFORM_ENV",
-        ]
-        env: dict[str, str] = {
-            "PATH": os.getenv("PATH", ""),
-            "_WKFLWS_NODE_LOG_LEVEL": str(logger.getEffectiveLevel()),
-        }
+            if state_input is not None:
+                args.append(
+                    json.dumps(
+                        state_input,
+                        separators=(",", ":"),
+                        cls=WkflwsJSONEncoder,
+                    )
+                )
+            else:
+                args.append("{}")
 
-        # A little hack to get the environment set up properly when
-        # executed from within a pex.
-        if os.getenv("PEX", False):
-            logger.debug("pex detected, Applying PYTHONPATH env")
-            env["PYTHONPATH"] = ":".join(sys.path)
-            env_var_allow_list.append("PEX")
-            env_var_allow_list.append("PYTHONPATH")
+            args.append(json.dumps(span_ctx, separators=(",", ":")))
 
-        for env_var in env_var_allow_list:
-            if env_var in os.environ:
-                env[env_var] = os.environ[env_var]
+            # Provide a limited environment to the subprocess.
+            env_var_allow_list = [  # TODO: how to make this dynamic?
+                "VOYAGE_PLATFORM_API_KEY",
+                "LIVERECOVER_API_KEY",
+                "VOYAGE_PLATFORM_ENV",
+            ]
+            env: dict[str, str] = {
+                "PATH": os.getenv("PATH", ""),
+                # "_WKFLWS_NODE_LOG_LEVEL": str(logger.getEffectiveLevel()),
+            }
 
-        logger.debug(f"Executing {state_name} -> {args}")
-        # Executing the process asynchronously let's the gunicorn worker function.
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=subprocess.PIPE,
-            # stderr=None,
-            env=os.environ,
-            # check=True, # Raise exception if failure
-        )
-        raw_output = ""
-        while True:
+            # A little hack to get the environment set up properly when
+            # executed from within a pex.
+            if os.getenv("PEX", False):
+                # logger.debug("pex detected, Applying PYTHONPATH env")
+                env["PYTHONPATH"] = ":".join(sys.path)
+                env_var_allow_list.append("PEX")
+                env_var_allow_list.append("PYTHONPATH")
+
+            for env_var in env_var_allow_list:
+                if env_var in os.environ:
+                    env[env_var] = os.environ[env_var]
+
+            # print(f"Executing {state_name} -> {args}")
+            # Executing the process asynchronously let's the gunicorn worker function.
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=subprocess.PIPE,
+                # stderr=None,
+                env=os.environ,
+                # check=True, # Raise exception if failure
+            )
+            raw_output = ""
+            while True:
+                _output, _ = await process.communicate()
+                raw_output += _output.decode("utf-8")
+
+                if process.returncode is not None:
+                    break
+
+            if process.returncode != 0:
+                e = WkflwStateError("Execution failed due to non-zero return code.")
+                span.record_exception(
+                    e,
+                    attributes={"return_code": process.returncode},
+                )
+                raise e
+
             _output, _ = await process.communicate()
             raw_output += _output.decode("utf-8")
 
-            if process.returncode is not None:
-                break
-
-        logger.debug(
-            f"Execution of {state_name} complete (return code: {process.returncode})"
-        )
-
-        if process.returncode != 0:
-            raise WkflwStateError(
-                f"Execution of {state_name} failed. Process returned error code: "
-                f"{process.returncode}."
-            )
-
-        _output, _ = await process.communicate()
-        raw_output += _output.decode("utf-8")
-
-        return raw_output
+            return raw_output
 
 
 async def execution_entry_point(
     resource_path: str,
     workflow_execution: WorkflowExecution,
     state_input: Optional[str] = None,
+    span_ctx: Optional[dict[str, str]] = None,
 ) -> str:
     """Entry point to the node subprocess.
 
@@ -151,6 +176,7 @@ async def execution_entry_point(
         workflow_execution: The entire workflow execution definition so that it can be
             used during data preparation.
         state_input: The processed input to this node's execution.
+        span_ctx: the context for the current span if tracing.
     Returns:
         The raw output from stdout. This should be a serialized JSON payload.
     """
@@ -172,9 +198,15 @@ async def execution_entry_point(
     else:
         args.append("{}")
 
+    if not span_ctx:
+        span_ctx = {}
+
     args.append(
         json.dumps(
-            workflow_execution.get_task_context(workflow_execution.current_state_name)
+            workflow_execution.get_task_context(
+                workflow_execution.current_state_name,
+                span_ctx,
+            )
         )
     )
 
@@ -229,11 +261,20 @@ if __name__ == "__main__":
     except IndexError:
         state_input = None
 
+    if not workflow_execution_data:
+        logger.error("Expected the state input payload (even if it is {}).")
+        sys.exit(1)
+
+    try:
+        span_ctx: dict[str, str] = json.loads(sys.argv[4])
+    except IndexError:
+        span_ctx = {}
+
     # Reset the log level for this new process's logger. Default is INFO
     logger.setLevel(int(os.getenv("_WKFLWS_NODE_LOG_LEVEL", 20)))
 
     output = asyncio.run(
-        execution_entry_point(resource_path, workflow_execution, state_input)
+        execution_entry_point(resource_path, workflow_execution, state_input, span_ctx)
     )
 
     # Display the output for the `execute()` method to grab

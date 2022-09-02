@@ -4,6 +4,7 @@ import json
 from types import MappingProxyType
 from typing import Any, Optional, Type, TYPE_CHECKING, Union
 
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from .conf import settings
@@ -18,6 +19,7 @@ from .intrinsic_funcs.interpreter import Interpreter
 from .intrinsic_funcs.parser import Parser
 from .intrinsic_funcs.scanner import Scanner
 from .logging import logger, LogLevel
+from .trace import tracer
 from .utils.execution import module_attribute_from_string
 from .utils.jsonpath import get_jsonpath_value, set_jsonpath_value
 
@@ -50,26 +52,40 @@ class WorkflowExecution(BaseModel):
 
     async def start(self, state_input: dict[str, Any]):
         """Begin the execution of ``workflow_definition``."""
-        logger.debug(f"Starting workflow id {self.workflow_id}")
-        if self.current_state_name is not None:
-            raise WkflwExecutionAlreadyStartedError(
-                f"Workflow execution id {self.execution_id} has already started."
-            )
+        with tracer.start_as_current_span(
+            f"{__name__}.WorkflowExecution.start"
+        ) as span:
+            span.set_attribute("wkflws.workflow_id", self.workflow_id)
+            if self.current_state_name is not None:
+                e = WkflwExecutionAlreadyStartedError(
+                    "Workflow execution has already started."
+                )
+                span.record_exception(
+                    e,
+                    attributes={
+                        "wkflws.execution_id": self.execution_id,
+                    },
+                )
+                raise e
 
-        try:
-            self.set_current_state_name(self.workflow_definition["StartAt"])
-        except KeyError:
-            raise WkflwExecutionException(
-                f"Unable to start workflow {self.workflow_id}. No StartAt defined"
-            )
+            try:
+                self.set_current_state_name(self.workflow_definition["StartAt"])
+            except KeyError:
+                e = WkflwExecutionException(
+                    "Unable to start workflow No StartAt defined"
+                )
+                span.record_exception(e)
+                raise e
 
-        if self.current_state_name is None:
-            # This is mostly to evaluate all branches for the type checker.
-            raise WkflwExecutionException(
-                f"Unable to start workflow {self.workflow_id}. StartAt defined as null"
-            )
+            if self.current_state_name is None:
+                # This is mostly to evaluate all branches for the type checker.
+                e = WkflwExecutionException(
+                    "Unable to start workflow. StartAt defined as null"
+                )
+                span.record_exception(e)
+                raise e
 
-        await self.execute_state(self.current_state_name, state_input)
+            await self.execute_state(self.current_state_name, state_input)
 
     def set_current_state_name(self, state_name: str):
         """Set the current state to the provided name.
@@ -112,9 +128,7 @@ class WorkflowExecution(BaseModel):
             state_name: The name of the state to execute.
             state_input: The input for the state (i.e. output of another state.)
         """
-        logger.debug(f"Processing state {state_name}")
         state = self.get_state(state_name)
-
         processed_input = await self.get_processed_state_input(
             self.current_state,
             state_input,
@@ -162,9 +176,10 @@ class WorkflowExecution(BaseModel):
                         input_=processed_input,
                         output=result,
                     )
-                    logger.debug(
-                        f" > Effective Output ({type(output)}): '{json.dumps(output)}'"
-                    )
+                    # logger.debug(
+                    #     f" > Effective Output ({type(output)}): "
+                    #     f"'{json.dumps(output)}'"
+                    # )
                 else:
                     output = state_input
 
@@ -203,6 +218,7 @@ class WorkflowExecution(BaseModel):
     def get_task_context(
         self,
         state_name: str,
+        span_ctx: dict[str, str],
         entered_time: Optional[datetime] = None,
     ) -> dict[str, Any]:
         """Build the context object that should be provided to the task.
@@ -225,6 +241,7 @@ class WorkflowExecution(BaseModel):
                "Name": "<name of the workflow>"
              },
              "Task": {
+               "traceparent": "00-4855587e9020cb4ecc837ec2a-cb3cb7f6245-01"–
                "Secrets": {
                  "<key>": "<value>",
                }
@@ -234,6 +251,7 @@ class WorkflowExecution(BaseModel):
         Args:
             state_name: The name of the state being executed as defined by the "Name"
                 field in the States section of the workflow definition.
+            span_ctx: The context for the tracing span
             entered_time: The time the state execution started. By default ``now`` will
                 be used.
 
@@ -243,6 +261,7 @@ class WorkflowExecution(BaseModel):
 
         task_context: dict[str, Any] = {}
         task_context.update(self.state_context.get(state_name, {}))
+        task_context.update(span_ctx)
 
         return {
             "Execution": {
@@ -277,23 +296,31 @@ class WorkflowExecution(BaseModel):
         Return:
            The deserialized output from the task
         """
-        logger.debug(f"Executing 'Task' state type: '{self.current_state_name}'")
+        with tracer.start_as_current_span(
+            f"{__name__}.WorkflowExecution.state_process_task"
+        ) as span:
+            # span.set_attribute("wkflws.state_name", self.current_state_name or "")
+            # logger.debug(f"Executing 'Task' state type: '{self.current_state_name}'")
 
-        logger.debug(f" > Task input ({type(state_input)}): {state_input}")
+            # logger.debug(f" > Task input ({type(state_input)}): {state_input}")
 
-        executor = self.executor_class()
-        logger.debug(f"Using executor '{executor.__class__.__name__}'")
-        try:
-            output = await executor.execute(
-                state_name,
-                workflow=self,
-                state_input=state_input,
-            )
-            deserialized_output = json.loads(output)
-        except Exception:
-            logger.exception(f"Exception found during execution of {state_name}...")
-            return {}
-        return deserialized_output
+            executor = self.executor_class()
+            # span.set_attribute("wkflws.executor", executor.__class__.__name__)
+            try:
+                output = await executor.execute(
+                    state_name,
+                    workflow=self,
+                    state_input=state_input,
+                )
+                deserialized_output = json.loads(output)
+            except Exception as e:
+                span.record_exception(e)
+                raise
+                # The return hides errors, like typos i made in the executor class
+                # logger.exception(f"Exception found during execution of {state_name}...")
+                return {}
+
+            return deserialized_output
 
     async def state_process_choice(
         self,
@@ -307,25 +334,33 @@ class WorkflowExecution(BaseModel):
             state_input: The input to the Task state. (i.e. output of the previous
                 state.)
         """
-        next_state_name = state.get("Default", None)
+        with tracer.start_as_current_span(
+            f"{__name__}.WorkflowExecution.state_process_choice"
+        ) as span:
+            span.set_attribute("wkflws.state_name", self.current_state_name or "")
 
-        for i, choice in enumerate(state["Choices"]):
-            # > A Choice State MUST NOT be an End state.
-            if "End" in choice:
-                raise WkflwExecutionException("Choice rule cannot be an End")
+            next_state_name = state.get("Default", None)
 
-            result = self.evaluate_choice_branch(branch=choice, state_input=state_input)
+            for i, choice in enumerate(state["Choices"]):
+                # > A Choice State MUST NOT be an End state.
+                if "End" in choice:
+                    raise WkflwExecutionException("Choice rule cannot be an End")
 
-            if result:
-                logger.debug(f"Choice index {i} successful")
-                next_state_name = choice["Next"]
-                break
+                result = self.evaluate_choice_branch(
+                    branch=choice,
+                    state_input=state_input,
+                )
 
-        if not next_state_name:
-            raise WkflwExecutionException("States.NoChoiceMatched")
+                if result:
+                    logger.debug(f"Choice index {i} successful")
+                    next_state_name = choice["Next"]
+                    break
 
-        self.set_current_state_name(next_state_name)
-        await self.execute_state(next_state_name, state_input)
+            if not next_state_name:
+                raise WkflwExecutionException("States.NoChoiceMatched")
+
+            self.set_current_state_name(next_state_name)
+            await self.execute_state(next_state_name, state_input)
 
     def evaluate_choice_branch(
         self,
@@ -642,25 +677,34 @@ async def initialize_workflows(
     workflow_input: dict[str, Any],
 ) -> tuple[WorkflowExecution, ...]:
     """Initialize workflows that need to be executed by calling the lookup helper."""
-    from .lookup import get_lookup_helper_object  # prevent circular import
+    with tracer.start_as_current_span("wkflws.workflow.initialize_workflow") as span:
+        from .lookup import get_lookup_helper_object  # prevent circular import
 
-    lookup_helper = get_lookup_helper_object()
-    workflow_exec_datas = await lookup_helper.get_workflows(initial_node_id, event)
-
-    if logger.getEffectiveLevel() == LogLevel.DEBUG:
-        logger.debug(f"Executing {len(workflow_exec_datas)} workflows")
-
-    workflows: tuple[WorkflowExecution, ...] = ()
-    for wkflw_exec_data in workflow_exec_datas:
-        workflows += (
-            WorkflowExecution(
-                execution_id=event.identifier,
-                workflow_id=wkflw_exec_data.workflow_id,
-                workflow_definition=wkflw_exec_data.workflow_definition,
-                original_input=workflow_input,
-                state_context=wkflw_exec_data.state_context,
-                execution_start_time=datetime.now(tz=timezone.utc),
-            ),
+        lookup_helper = get_lookup_helper_object()
+        workflow_exec_datas = await lookup_helper.get_workflows(initial_node_id, event)
+        span.set_attribute(
+            "wkflws.lookup_helper_class",
+            f"{lookup_helper.__module__}.{lookup_helper.__class__.__name__}",
         )
+
+        if logger.getEffectiveLevel() == LogLevel.DEBUG:
+            logger.debug(f"Executing {len(workflow_exec_datas)} workflows")
+
+        #: workflow ids to include in the span
+        span_workflow_ids = []
+        workflows: tuple[WorkflowExecution, ...] = ()
+        for wkflw_exec_data in workflow_exec_datas:
+            span_workflow_ids.append(wkflw_exec_data.workflow_id)
+            workflows += (
+                WorkflowExecution(
+                    execution_id=event.identifier,
+                    workflow_id=wkflw_exec_data.workflow_id,
+                    workflow_definition=wkflw_exec_data.workflow_definition,
+                    original_input=workflow_input,
+                    state_context=wkflw_exec_data.state_context,
+                    execution_start_time=datetime.now(tz=timezone.utc),
+                ),
+            )
         # await workflow_execution.start(event.asdict())
-    return workflows
+        span.set_attribute("wkflws.workflow_ids", span_workflow_ids)
+        return workflows

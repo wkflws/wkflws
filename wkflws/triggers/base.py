@@ -6,6 +6,7 @@ from .producer import AsyncProducer
 from ..events import Event
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
+from ..trace import tracer
 from ..workflow import initialize_workflows
 
 
@@ -88,26 +89,40 @@ class BaseTrigger(abc.ABC):
         Args:
             event: The data to publish to Kafka.
         """
-        if self.producer:
-            await self.producer.produce(
-                event=event,
-                # TODO: type error: generate key/identifier if needed
-                key=event.identifier or "123TODO",
-                topic=self.kafka_topic,
-            )
-        else:
-            initial_node_id, workflow_input = await self.process_func(event)
-
-            if initial_node_id is None:
-                return
-
-            workflows = await initialize_workflows(
-                initial_node_id=initial_node_id,
-                event=event,
-                workflow_input=workflow_input,
+        with tracer.start_as_current_span(
+            "wkflws.triggers.webhook.WebhookTrigger.send_event"
+        ) as span:
+            from opentelemetry.trace.propagation.tracecontext import (
+                TraceContextTextMapPropagator,
             )
 
-            asyncio.gather(*(w.start(workflow_input) for w in workflows))
+            TraceContextTextMapPropagator().inject(event.metadata)
+
+            if self.producer:
+                span.set_attribute("event_process.method", "kafka")
+                await self.producer.produce(
+                    event=event,
+                    # TODO: type error: generate key/identifier if needed
+                    key=event.identifier or "123TODO",
+                    topic=self.kafka_topic,
+                )
+            else:
+                span.set_attribute("event_process.method", "inline")
+                initial_node_id, workflow_input = await self.process_func(event)
+                span.set_attribute("initial_node_id", initial_node_id or "None")
+
+                if initial_node_id is None:
+                    return
+
+                span.set_attribute("node_id", initial_node_id)
+
+                workflows = await initialize_workflows(
+                    initial_node_id=initial_node_id,
+                    event=event,
+                    workflow_input=workflow_input,
+                )
+
+                asyncio.gather(*(w.start(workflow_input) for w in workflows))
 
     @abc.abstractmethod
     async def start_listener(self):
