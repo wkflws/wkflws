@@ -12,7 +12,7 @@ import subprocess
 import sys
 from typing import Any, Optional
 
-from opentelemetry import trace
+# from opentelemetry import trace  # type:ignore
 
 from .base import BaseExecutor
 from ..exceptions import (
@@ -132,14 +132,17 @@ class MultiProcessExecutor(BaseExecutor):
             process = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 # stderr=None,
                 env=os.environ,
                 # check=True, # Raise exception if failure
             )
-            raw_output = ""
+            raw_stdout = ""
+            raw_stderr = ""
             while True:
-                _output, _ = await process.communicate()
-                raw_output += _output.decode("utf-8")
+                _output, _error = await process.communicate()
+                raw_stdout += _output.decode("utf-8")
+                raw_stderr += _error.decode("utf-8")
 
                 if process.returncode is not None:
                     break
@@ -148,14 +151,17 @@ class MultiProcessExecutor(BaseExecutor):
                 e = WkflwStateError("Execution failed due to non-zero return code.")
                 span.record_exception(
                     e,
-                    attributes={"return_code": process.returncode},
+                    attributes={
+                        "subprocess.return_code": process.returncode,
+                        "subprocess.stderr": raw_stderr,
+                    },
                 )
                 raise e
 
             _output, _ = await process.communicate()
-            raw_output += _output.decode("utf-8")
+            raw_stdout += _output.decode("utf-8")
 
-            return raw_output
+            return raw_stdout
 
 
 async def execution_entry_point(

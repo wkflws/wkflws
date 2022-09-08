@@ -241,7 +241,7 @@ class WorkflowExecution(BaseModel):
                "Name": "<name of the workflow>"
              },
              "Task": {
-               "traceparent": "00-4855587e9020cb4ecc837ec2a-cb3cb7f6245-01"–
+               "traceparent": "00-4855587e9020cb4ecc837ec2a-cb3cb7f6245-01",
                "Secrets": {
                  "<key>": "<value>",
                }
