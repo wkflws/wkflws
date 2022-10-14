@@ -403,13 +403,13 @@ class WorkflowExecution(BaseModel):
             )
             return str(value) == branch["StringEquals"]
         elif "IsNull" in branch:
-            return value is None
+            return (value is None) == branch["IsNull"]
         elif "IsNumeric" in branch:
-            return isinstance(value, (int, float, Decimal))
+            return isinstance(value, (int, float, Decimal)) == branch["IsNumeric"]
         elif "IsString" in branch:
-            return isinstance(value, str)
+            return isinstance(value, str) == branch["IsString"]
         elif "IsBoolean" in branch:
-            return isinstance(value, bool)
+            return isinstance(value, bool) == branch["IsBoolean"]
         # elif "IsTimestamp" in branch:
         #     pass
         # elif "TimestampGreaterThanEquals" in branch:
