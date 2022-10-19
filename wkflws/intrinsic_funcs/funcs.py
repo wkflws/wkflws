@@ -128,6 +128,20 @@ def string_random(
     return "".join(random.choice(chars) for _ in range(int(length)))
 
 
+@register(name="String.Fallback", arity=2)
+def string_fallback(value: str, default: str) -> str:
+    """Provide a default string when ``value`` is blank.
+
+    Args:
+        value: The preferred string.
+        default: The fallback string if ``value`` is blank
+    """
+    if value == "":
+        return default
+
+    return value
+
+
 @register(name="Cast.ToNumber", arity=1)
 def to_number(value: str) -> Decimal:
     """Typecast a string to a number."""
