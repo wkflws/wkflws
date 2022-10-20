@@ -7,10 +7,10 @@ try:
         FastAPI,
         Response as FAPIResponse,
         Request as FAPIRequest,
-        status as status,  # noqa This is used as a convenience import
     )
+    from fastapi import status as status  # noqa: used as a convenience import
     import gunicorn.app.base  # type:ignore  # no stubs
-    import uvicorn  # type:ignore  # no stubs  # noqa - worker imported by string
+    import uvicorn  # type:ignore  # noqa: - worker imported by string
 except ImportError:
     raise ImportError("Webhook modules not installed. (pip install wkflws[webhook]")
 
@@ -135,7 +135,7 @@ class WebhookTrigger(BaseTrigger):
         self.app.version = self.client_version
 
         @self.app.on_event("shutdown")
-        async def disconnect_producer():
+        async def disconnect_producer():  # type:ignore # not an unused func
             if self.producer is not None:
                 logger.info(
                     "Caught API shutdown event. Trying to gracefully close Kafka "
@@ -144,7 +144,7 @@ class WebhookTrigger(BaseTrigger):
                 self.producer.close()
 
         for route in routes:
-            self.add_route(*route)
+            self.add_route(*route)  # type:ignore # can't infer type for func signature
 
         # This must come after adding routes otherwise they won't be initialized and
         # served.
@@ -154,7 +154,7 @@ class WebhookTrigger(BaseTrigger):
         self,
         methods: tuple[http_method, ...],
         path: str,
-        func: Callable[[Request], Awaitable[Optional[Event]]],
+        func: Callable[[Request, Response], Awaitable[Optional[Event]]],
     ):
         """Add a new route and publishes the return value to the event bus.
 
@@ -192,7 +192,7 @@ class WebhookTrigger(BaseTrigger):
 
     async def _handle_request(
         self,
-        func: Callable[[Request], Awaitable[Optional[Event]]],
+        func: Callable[[Request, Response], Awaitable[Optional[Event]]],
         original_request: FAPIRequest,
     ) -> FAPIResponse:
         """Handle the incoming webhook request.
