@@ -18,6 +18,7 @@ from .base import BaseTrigger
 from ..events import Event
 from ..http import http_method, Request, Response
 from ..logging import LOG_FORMAT, logger, LogLevel
+from ..tracing import tracer
 
 
 class WebhookTrigger(BaseTrigger):
@@ -143,8 +144,14 @@ class WebhookTrigger(BaseTrigger):
                 )
                 self.producer.close()
 
+        # This is to map functions to routes so we can get the generic path (without
+        # custom path variables) to decrease cardinality of the span
+        self.func_to_route_map: dict[
+            Callable[[Request, Response], Awaitable[Optional[Event]]], str
+        ] = {}
+
         for route in routes:
-            self.add_route(*route)  # type:ignore # can't infer type for func signature
+            self.add_route(*route)
 
         # This must come after adding routes otherwise they won't be initialized and
         # served.
@@ -189,6 +196,7 @@ class WebhookTrigger(BaseTrigger):
             endpoint=wkflws_webhook_route_wrapper,
             methods=list(m.value for m in methods),
         )
+        self.func_to_route_map[func] = path
 
     async def _handle_request(
         self,
@@ -211,30 +219,72 @@ class WebhookTrigger(BaseTrigger):
            A 200 status code. Generally this tells the remote server we've accepted
            the data and don't retry.
         """
-        incoming_headers = {k: v for k, v in original_request.headers.items()}
-        request = Request(
-            url=str(original_request.url),
-            headers=incoming_headers,
-            body=(await original_request.body()).decode("utf-8"),
-        )
-        response = Response()
+        with tracer.start_as_current_span(
+            self.func_to_route_map[func],
+            carrier=original_request.headers,
+            attributes={
+                "http.method": original_request.method,
+                "http.url": str(original_request.url),
+            },
+        ) as span:
+            incoming_headers: dict[str, str] = {}
+            for k, v in original_request.headers.items():
+                incoming_headers[k] = v
 
-        event = await func(request, response)
+                # OTEL advice on adding headers to spans:
+                # HTTP request headers, <key> being the normalized HTTP Header name
+                # (lowercase, with - characters replaced by _), the value being the
+                # header values. [1] [2]
 
-        if event:
-            await self.send_event(event)
+                # 2. if a header is present but empty record an empty string
+                # 1. Explicitly define a list of headers to include:
+                if k in ("x-forwarded-for", "x-forwarded-proto", "content-type"):
+                    span.set_attribute(
+                        f"http.request.header.{k.lower().replace('-','_')}",
+                        v,
+                    )
 
-        # if response.headers and "Content-Type" in response.headers.keys():
-        #     media_type = response.headers.pop("Content-Type")
-        # else:
-        #     media_type = None
-        r = FAPIResponse(
-            status_code=response.status_code,
-            content=response.body,
-            headers=response.headers,  # type:ignore
-        )
+            # besides the other headers above, some have explicit attributes defined by
+            # otel
+            if "user-agent" in incoming_headers:
+                span.set_attribute("http.user_agent", incoming_headers["user-agent"])
+            if "host" in incoming_headers:
+                span.set_attribute("http.host", incoming_headers["host"])
+            if "content-length" in incoming_headers:
+                span.set_attribute(
+                    "http.request_content_length", incoming_headers["content-length"]
+                )
 
-        return r
+            span.set_attribute(
+                "reqeust.handler", f"{func.__module__}.{func.__qualname__}"
+            )
+
+            request = Request(
+                url=str(original_request.url),
+                headers=incoming_headers,
+                body=(await original_request.body()).decode("utf-8"),
+            )
+            response = Response()
+
+            event = await func(request, response)
+
+            if event:
+                await self.send_event(event)
+
+            # if response.headers and "Content-Type" in response.headers.keys():
+            #     media_type = response.headers.pop("Content-Type")
+            # else:
+            #     media_type = None
+
+            r = FAPIResponse(
+                status_code=response.status_code,
+                content=response.body,
+                headers=response.headers,  # type:ignore # dict[str,str] is 'invalid'
+            )
+
+            span.set_attribute("http.status_code", r.status_code)
+
+            return r
 
     async def start_listener(self):
         """Start a Gunicorn daemon process using uvicorn as the worker.

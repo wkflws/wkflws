@@ -18,6 +18,7 @@ from .intrinsic_funcs.interpreter import Interpreter
 from .intrinsic_funcs.parser import Parser
 from .intrinsic_funcs.scanner import Scanner
 from .logging import logger, LogLevel
+from .tracing import tracer
 from .utils.execution import module_attribute_from_string
 from .utils.jsonpath import get_jsonpath_value, set_jsonpath_value
 
@@ -50,26 +51,27 @@ class WorkflowExecution(BaseModel):
 
     async def start(self, state_input: dict[str, Any]):
         """Begin the execution of ``workflow_definition``."""
-        logger.debug(f"Starting workflow id {self.workflow_id}")
-        if self.current_state_name is not None:
-            raise WkflwExecutionAlreadyStartedError(
-                f"Workflow execution id {self.execution_id} has already started."
-            )
+        with tracer.start_as_current_span("workflow.WorkflowExecution.start"):
+            logger.debug(f"Starting workflow id {self.workflow_id}")
+            if self.current_state_name is not None:
+                raise WkflwExecutionAlreadyStartedError(
+                    f"Workflow execution id {self.execution_id} has already started."
+                )
 
-        try:
-            self.set_current_state_name(self.workflow_definition["StartAt"])
-        except KeyError:
-            raise WkflwExecutionException(
-                f"Unable to start workflow {self.workflow_id}. No StartAt defined"
-            )
+            try:
+                self.set_current_state_name(self.workflow_definition["StartAt"])
+            except KeyError:
+                raise WkflwExecutionException(
+                    f"Unable to start workflow {self.workflow_id}. No StartAt defined"
+                )
 
-        if self.current_state_name is None:
-            # This is mostly to evaluate all branches for the type checker.
-            raise WkflwExecutionException(
-                f"Unable to start workflow {self.workflow_id}. StartAt defined as null"
-            )
+            if self.current_state_name is None:
+                # This is mostly to evaluate all branches for the type checker.
+                raise WkflwExecutionException(
+                    f"Unable to start workflow {self.workflow_id}. StartAt defined as null"
+                )
 
-        await self.execute_state(self.current_state_name, state_input)
+            await self.execute_state(self.current_state_name, state_input)
 
     def set_current_state_name(self, state_name: str):
         """Set the current state to the provided name.
@@ -97,13 +99,14 @@ class WorkflowExecution(BaseModel):
 
         next_state = self.current_state.get("Next", None)
 
-        if self.current_state_name is None:
+        if next_state is None:
             raise WkflwExecutionException(
                 f"Unknown next step for {self.current_state_name}"
             )
         self.set_current_state_name(str(next_state))
 
-        await self.execute_state(self.current_state_name, state_input)
+        # type ignored because we know current_state_name is not None
+        await self.execute_state(self.current_state_name, state_input)  # type:ignore
 
     async def execute_state(self, state_name: str, state_input: dict[str, Any]):
         """Execute the state defined by ``state_name``.
@@ -112,64 +115,73 @@ class WorkflowExecution(BaseModel):
             state_name: The name of the state to execute.
             state_input: The input for the state (i.e. output of another state.)
         """
-        logger.debug(f"Processing state {state_name}")
-        state = self.get_state(state_name)
+        with tracer.start_as_current_span(
+            "workflow.WorkflowExecution.execute_state",
+        ) as span:
+            logger.debug(f"Processing state {state_name}")
+            span.set_attribute("workflow.state_name", state_name)
+            state = self.get_state(state_name)
 
-        processed_input = await self.get_processed_state_input(
-            self.current_state,
-            state_input,
-        )
+            processed_input = await self.get_processed_state_input(
+                self.current_state,
+                state_input,
+            )
 
-        output = {}
-        match state["Type"]:
-            case "Task":
-                raw_output = await self.state_process_task(
-                    state_name,
-                    processed_input,
-                )
-                output = await self.get_processed_output(
-                    input_=state_input,
-                    output=raw_output,
-                )
-            case "Choice":
-                # TODO: Choice only supports InputPath or OutputPath
-                await self.state_process_choice(state, state_input)
-                output = state_input
-            case "Pass":
-                # > The Pass State (identified by "Type":"Pass") by default passes its
-                # > input to its output, performing no work.
-                # >
-                # > A Pass State MAY have a field named "Result". If present, its value
-                # > is treated as the output of a virtual task, and placed as prescribed
-                # > by the "ResultPath" field, if any, to be passed on to the next
-                # > state. If "Result" is not provided, the output is the input. Thus if
-                # > neither "Result" nor "ResultPath" are provided, the Pass State
-                # > copies its input through to its output.
-                if "Result" in self.current_state:
-                    # I'm taking some liberty here by assuming ``Result`` is a Payload
-                    # Template. It is not specified one way or the other in the spec.
-                    #
-                    # > "Result" means the JSON text that a state generates, for example
-                    # > from external code invoked by a Task State, the combined result
-                    # > of the branches in a Parallel or Map State, or the Value of the
-                    # > "Result" field in a Pass State.
-                    result = await self.evaluate_payload_template(
-                        self.current_state["Result"],
+            state_type = state["Type"]
+            span.set_attribute("workflow.state_type", state_type)
+
+            output = {}
+            match state_type:
+                case "Task":
+                    raw_output = await self.state_process_task(
+                        state_name,
                         processed_input,
                     )
-
-                    output = await self.process_result_path(
-                        input_=processed_input,
-                        output=result,
+                    output = await self.get_processed_output(
+                        input_=state_input,
+                        output=raw_output,
                     )
-                    logger.debug(
-                        f" > Effective Output ({type(output)}): '{json.dumps(output)}'"
-                    )
-                else:
+                case "Choice":
+                    # TODO: Choice only supports InputPath or OutputPath
+                    await self.state_process_choice(state, state_input)
                     output = state_input
+                case "Pass":
+                    # > The Pass State (identified by "Type":"Pass") by default passes its
+                    # > input to its output, performing no work.
+                    # >
+                    # > A Pass State MAY have a field named "Result". If present, its value
+                    # > is treated as the output of a virtual task, and placed as prescribed
+                    # > by the "ResultPath" field, if any, to be passed on to the next
+                    # > state. If "Result" is not provided, the output is the input. Thus if
+                    # > neither "Result" nor "ResultPath" are provided, the Pass State
+                    # > copies its input through to its output.
+                    if "Result" in self.current_state:
+                        # I'm taking some liberty here by assuming ``Result`` is a Payload
+                        # Template. It is not specified one way or the other in the spec.
+                        #
+                        # > "Result" means the JSON text that a state generates, for example
+                        # > from external code invoked by a Task State, the combined result
+                        # > of the branches in a Parallel or Map State, or the Value of the
+                        # > "Result" field in a Pass State.
+                        result = await self.evaluate_payload_template(
+                            self.current_state["Result"],
+                            processed_input,
+                        )
 
-            case _:
-                raise WkflwExecutionException(f'Unknown state type: {state["Type"]}')
+                        output = await self.process_result_path(
+                            input_=processed_input,
+                            output=result,
+                        )
+                        logger.debug(
+                            f" > Effective Output ({type(output)}): '{json.dumps(output)}'"
+                        )
+                    else:
+                        output = state_input
+
+                case _:
+                    raise WkflwExecutionException(
+                        f'Unknown state type: {state["Type"]}'
+                    )
 
         await self.execute_next_state(output)
 
@@ -644,23 +656,33 @@ async def initialize_workflows(
     """Initialize workflows that need to be executed by calling the lookup helper."""
     from .lookup import get_lookup_helper_object  # prevent circular import
 
-    lookup_helper = get_lookup_helper_object()
-    workflow_exec_datas = await lookup_helper.get_workflows(initial_node_id, event)
-
-    if logger.getEffectiveLevel() == LogLevel.DEBUG:
-        logger.debug(f"Executing {len(workflow_exec_datas)} workflows")
-
-    workflows: tuple[WorkflowExecution, ...] = ()
-    for wkflw_exec_data in workflow_exec_datas:
-        workflows += (
-            WorkflowExecution(
-                execution_id=event.identifier,
-                workflow_id=wkflw_exec_data.workflow_id,
-                workflow_definition=wkflw_exec_data.workflow_definition,
-                original_input=workflow_input,
-                state_context=wkflw_exec_data.state_context,
-                execution_start_time=datetime.now(tz=timezone.utc),
-            ),
+    with tracer.start_as_current_span(
+        "workflow.initialize_workflows",
+    ) as span:
+        lookup_helper = get_lookup_helper_object()
+        workflow_exec_datas = await lookup_helper.get_workflows(initial_node_id, event)
+        span.set_attribute(
+            "lookup_class",
+            f"{lookup_helper.__class__.__module__}.{lookup_helper.__class__.__name__}",
         )
-        # await workflow_execution.start(event.asdict())
-    return workflows
+
+        if logger.getEffectiveLevel() == LogLevel.DEBUG:
+            logger.debug(f"Executing {len(workflow_exec_datas)} workflows")
+
+        workflows: tuple[WorkflowExecution, ...] = ()
+        workflow_ids: list[str] = []
+        for wkflw_exec_data in workflow_exec_datas:
+            workflow_ids.append(wkflw_exec_data.workflow_id)
+            workflows += (
+                WorkflowExecution(
+                    execution_id=event.identifier,
+                    workflow_id=wkflw_exec_data.workflow_id,
+                    workflow_definition=wkflw_exec_data.workflow_definition,
+                    original_input=workflow_input,
+                    state_context=wkflw_exec_data.state_context,
+                    execution_start_time=datetime.now(tz=timezone.utc),
+                ),
+            )
+
+        span.set_attribute("workflow_ids", workflow_ids)
+        return workflows
