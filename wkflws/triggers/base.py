@@ -6,7 +6,7 @@ from .producer import AsyncProducer
 from ..events import Event
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
-from ..tracing import tracer
+from ..tracing import get_tracer
 from ..workflow import initialize_workflows
 
 
@@ -89,7 +89,7 @@ class BaseTrigger(abc.ABC):
         Args:
             event: The data to publish to Kafka.
         """
-        with tracer.start_as_current_span(
+        with get_tracer().start_as_current_span(
             "triggers.base.BaseTrigger.send_event",
         ) as span:
             if self.producer:

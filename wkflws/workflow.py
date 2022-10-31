@@ -18,7 +18,7 @@ from .intrinsic_funcs.interpreter import Interpreter
 from .intrinsic_funcs.parser import Parser
 from .intrinsic_funcs.scanner import Scanner
 from .logging import logger, LogLevel
-from .tracing import tracer
+from .tracing import get_tracer
 from .utils.execution import module_attribute_from_string
 from .utils.jsonpath import get_jsonpath_value, set_jsonpath_value
 
@@ -51,7 +51,7 @@ class WorkflowExecution(BaseModel):
 
     async def start(self, state_input: dict[str, Any]):
         """Begin the execution of ``workflow_definition``."""
-        with tracer.start_as_current_span("workflow.WorkflowExecution.start"):
+        with get_tracer().start_as_current_span("workflow.WorkflowExecution.start"):
             logger.debug(f"Starting workflow id {self.workflow_id}")
             if self.current_state_name is not None:
                 raise WkflwExecutionAlreadyStartedError(
@@ -115,7 +115,7 @@ class WorkflowExecution(BaseModel):
             state_name: The name of the state to execute.
             state_input: The input for the state (i.e. output of another state.)
         """
-        with tracer.start_as_current_span(
+        with get_tracer().start_as_current_span(
             "workflow.WorkflowExecution.execute_state",
         ) as span:
             logger.debug(f"Processing state {state_name}")
@@ -656,7 +656,7 @@ async def initialize_workflows(
     """Initialize workflows that need to be executed by calling the lookup helper."""
     from .lookup import get_lookup_helper_object  # prevent circular import
 
-    with tracer.start_as_current_span(
+    with get_tracer().start_as_current_span(
         "workflow.initialize_workflows",
     ) as span:
         lookup_helper = get_lookup_helper_object()

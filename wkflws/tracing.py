@@ -1,16 +1,9 @@
-from contextlib import contextmanager
+from __future__ import annotations
+
 from dataclasses import dataclass
 import enum
 from typing import Any, Optional, Mapping
 
-# Maybe the actual tracer as a global so it can be conditionally checked by the custom
-# context manager. Marked as Optional[Any] so we don't have to force the installation of
-# the open telemetry libraries.
-_tracer: Optional[Any] = None
-
-# Tracks if an attempt has been made to inititalize the tracer. If this is True and
-# `_tracer` is None then it is safe to consider tracing as disabled.
-_tracer_initialized = False
 
 try:
     # Try to import the optional opentelemetry libraries. If they aren't installed then
@@ -34,52 +27,8 @@ try:
         TraceContextTextMapPropagator,
     )
 except ImportError:
-    _tracer_initialized = True
-
-# The tracer for devs to use. This will conditionally return the above real tracer if
-# everything is set up properly, otherwise it returns a mock resulting in no-ops for
-# tracing.
-class Tracer:
-    @contextmanager
-    def start_as_current_span(
-        self,
-        name: str,
-        *args,
-        carrier: Optional[Mapping[str, str]] = None,
-        **kwargs,
-    ):
-        """Context manager for collecting traces to be sent to a collector.
-
-        Args:
-            carrier: A key/value (e.g. dict) store that may contain trace context
-                information (trace id,span id,span flags)that can be used to "resume"
-                a trace.
-        """
-
-        # used to resume spans across boundaries
-        span_context: Optional[trace.SpanContext] = None
-
-        if not _tracer_initialized:
-            initialize_tracer()
-            if carrier:
-                # ignore the type because introspection says this returns a Context but
-                # we expect a SpanContext
-                span_context = TraceContextTextMapPropagator().extract(  # type:ignore
-                    carrier=carrier,
-                )
-
-        if _tracer is not None:
-            if span_context is not None and "context" not in kwargs:
-                # if there was a carrier we can include the span so traces resume
-                kwargs["context"] = span_context
-
-            with _tracer.start_as_current_span(name, *args, **kwargs) as span:
-                yield span
-        else:
-            yield pretendtracer()
-
-
-tracer = Tracer()
+    # This indicates we don't have the libraries installed, thus disable tracing.
+    trace: Optional[Any] = None  # type:ignore # already defined by import
 
 
 class TraceScheme(str, enum.Enum):
@@ -110,18 +59,15 @@ class TracerConfig:
 def initialize_tracer():
     """Initialize the tracer with any exporters configured.
 
-    This should be called once sometime during startup. If it is not pre-emptively
-    called, then it will be called on first use of the ``tracer``.
+    This should be called once sometime during startup.
     """
     from .conf import settings  # prevent circular import due to model validation
 
-    global _tracer_initialized, _tracer
-
-    if _tracer_initialized:
-        return
-
-    if settings.TRACING_EXPORTERS is None or len(settings.TRACING_EXPORTERS) < 1:
-        _tracer_initialized = True
+    if (
+        not trace
+        or settings.TRACING_EXPORTERS is None
+        or len(settings.TRACING_EXPORTERS) < 1
+    ):
         return
 
     resource = Resource(attributes={SERVICE_NAME: settings.TRACING_RESOURCE_NAME})
@@ -155,7 +101,33 @@ def initialize_tracer():
 
     trace.set_tracer_provider(trace_provider)
 
-    _tracer = trace.get_tracer(settings.TRACING_RESOURCE_NAME)
+
+def get_tracer(*args, **kwargs) -> Any:
+    """Get a tracer that can be used if tracing is enabled."""
+
+    from .conf import settings  # prevent circular import due to model validation
+
+    if trace is not None:
+        return trace.get_tracer(settings.TRACING_RESOURCE_NAME, *args, *kwargs)
+    else:
+        return pretendtracer()
+
+
+def get_span_context(
+    carrier: Optional[Mapping[str, str]] = None,
+) -> Optional[trace.SpanContext]:  # type:ignore # trace may be None
+    """Attempt to load trace infor from a carrier which can be used to resume a trace.
+
+    Args:
+        carrier: A mapping which may contain information (trace_id, span_id, trace
+            flags) about a trace. For example: event metadata, http headers, etc.
+    """
+    if not carrier:
+        return None
+
+    # ignore the type because introspection says this returns a Context but
+    # we expect a SpanContext
+    return TraceContextTextMapPropagator().extract(carrier=carrier)  # type:ignore
 
 
 class pretendtracer:
@@ -171,5 +143,5 @@ class pretendtracer:
     def __getattr__(self, name):
         return self.fake_func
 
-    def __setattr(self, name, value):
+    def __setattr__(self, name, value):
         return

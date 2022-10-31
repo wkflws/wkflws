@@ -18,7 +18,7 @@ from .base import BaseTrigger
 from ..events import Event
 from ..http import http_method, Request, Response
 from ..logging import LOG_FORMAT, logger, LogLevel
-from ..tracing import tracer
+from ..tracing import get_span_context, get_tracer
 
 
 class WebhookTrigger(BaseTrigger):
@@ -219,9 +219,9 @@ class WebhookTrigger(BaseTrigger):
            A 200 status code. Generally this tells the remote server we've accepted
            the data and don't retry.
         """
-        with tracer.start_as_current_span(
+        with get_tracer().start_as_current_span(
             self.func_to_route_map[func],
-            carrier=original_request.headers,
+            get_span_context(original_request.headers),
             attributes={
                 "http.method": original_request.method,
                 "http.url": str(original_request.url),
