@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """"""  # noqa
 import argparse
 import asyncio
@@ -417,7 +416,7 @@ async def _cmd_publish(args: argparse.Namespace):
         producer.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="wkflws management tool")
     parser.add_argument("-v", action="append_const", const="v", help="verbosity level")
 
