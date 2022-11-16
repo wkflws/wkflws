@@ -11,7 +11,7 @@ from typing import List, Union
 import urllib.request
 import zipfile
 
-# from wkflws.logging import logger
+from wkflws.logging import logger
 from wkflws.triggers.consumer import AsyncConsumer
 from wkflws.utils.execution import module_attribute_from_string
 
@@ -64,33 +64,6 @@ _CREATE_TRIGGER_LANG = {
 _CREATE_NODE_LANG = {
     "py": "https://github.com/wkflws/template-node-python/zipball/master",
 }
-# @faust_app.command(
-#     option("--topic", type=str, help="the name of the topic to reset"),)
-# async def reset_topic_offsets(self, topic: str) -> None:
-#     """Reset all partitions to offset 0 for the provided topic.
-
-#     Args:
-#         self: this function. part of Faust's ``command`` contract
-#         topic: the name of the topic to reset
-#     """
-#     c = get_aiokafka_consumer(consumer_group=Settings.consumer_group)
-#     topics = {}
-#     c.subscribe((topic, ))
-#     try:
-#         await c.start()
-#         for p in c.partitions_for_topic(topic):
-#             tp = aiokafka.TopicPartition(topic, p)
-#             topics[tp] = -1
-#             sys.stderr.write("Setting offset for partition#{} to -1".format(p))
-#         await c.commit(topics)
-#     except InconsistentGroupProtocolError:
-#         logger.exception(
-#             "Stop all other consumers before resetting the offsets")
-#     except Exception:
-#         logger.exception("Error resetting offsets for partition {}".format(
-#             topic))
-#     finally:
-#         await c.stop()
 
 
 def module_name(value: str):
@@ -141,7 +114,7 @@ def download_and_extract_template(zip_url: str, directory: str, module_name: str
         zip_url: The url for the zip file.
         directory: The directory to extract the zip into
     """
-    sys.stderr.write(f"Downloading {zip_url}")
+    sys.stderr.write(f"Downloading {zip_url}\n")
     r = urllib.request.urlopen(zip_url)
     zip_bytes = BytesIO(r.read())
 
@@ -158,11 +131,11 @@ def download_and_extract_template(zip_url: str, directory: str, module_name: str
                 # wkflws organization so this will match.
                 if info.filename.startswith("wkflws-template-"):
                     orig_rootdir = os.path.split(os.path.dirname(info.filename))[1]
-                    sys.stderr.write(f"Found ugly root directory of {orig_rootdir}")
+                    sys.stderr.write(f"Found ugly root directory of {orig_rootdir}\n")
                     break
 
             if orig_rootdir is None:
-                sys.stderr.write("Unable to find expected root directory name.")
+                sys.stderr.write("Unable to find expected root directory name.\n")
                 orig_rootdir = ""
 
             # Extract, modify, and write the files.
@@ -184,8 +157,8 @@ def download_and_extract_template(zip_url: str, directory: str, module_name: str
                         os.makedirs(info.filename)
                     continue
 
-                with z.open(info) as infile:
-                    content: Union[str, bytes] = infile.read()
+                with z.open(info) as in_file:
+                    content: Union[str, bytes] = in_file.read()
                     file_mode = "wb"
                     try:
                         # `content` is declared as a Union[str, bytes] for the type
@@ -202,14 +175,14 @@ def download_and_extract_template(zip_url: str, directory: str, module_name: str
                         pass
 
                     fileloc = os.path.join(directory, info.filename)
-                    sys.stderr.write(f"Writing {fileloc}")
+                    sys.stderr.write(f"Writing {fileloc}\n")
                     with open(fileloc, file_mode) as outfile:
                         outfile.write(content)
 
     except zipfile.BadZipFile:
         sys.stderr.write(
             f"Downloaded file is corrupt. Try manually downloading {zip_url} via your "
-            "browser."
+            "browser.\n"
         )
         sys.exit(1)
 
@@ -231,34 +204,35 @@ def git_init(directory: str, initial_branch="main"):
     for line in completed_process.stdout.decode("utf-8").split("\n"):
         if line.strip() == "":
             continue
-        sys.stderr.write(line)
+        sys.stderr.write(f"{line}\n")
 
     if completed_process.returncode != 0:
         for line in completed_process.stderr.decode("utf-8").split("\n")[:-1]:
             if line.strip() == "":
                 continue
-            sys.stderr.write(line)
+            sys.stderr.write(f"{line}\n")
 
 
 async def _cmd_trigger_start_listener(args: argparse.Namespace):
     from wkflws.conf import settings
 
     if settings.WORKFLOW_LOOKUP_CLASS == "":
-        sys.stderr.write("Workflow lookup class is undefined.")
+        logger.error("Workflow lookup class is undefined.")
         sys.exit(1)
 
     nodes = []
     for mod_path in args.modules:
         try:
             nodes.append(module_attribute_from_string(mod_path))
-            sys.stderr.write(f"Imported '{mod_path}' as {nodes[-1]}")
+            logger.debug(f"Imported '{mod_path}' as {nodes[-1]}")
         except ModuleNotFoundError as e:
-            sys.stderr.write("Exception", exc_info=e)
-            sys.stderr.write(f"The module '{mod_path}' cannot be imported.")
+            logger.error(f"The module '{mod_path}' cannot be imported.")
+            logger.debug(f"{e}", exc_info=e)
+
             sys.exit(1)
         except AttributeError as e:
-            sys.stderr.write("Exception", exc_info=e)
-            sys.stderr.write(f"The node object '{mod_path}' could not be found.")
+            logger.error(f"The node object '{mod_path}' could not be found.")
+            logger.debug(f"{e}", exc_info=e)
             sys.exit(1)
 
     # asyncio.gather(*(node.start_listener() for node in nodes))
@@ -272,15 +246,17 @@ async def _cmd_trigger_start_processor(args: argparse.Namespace):
     from wkflws.conf import settings
 
     if settings.WORKFLOW_LOOKUP_CLASS == "":
-        sys.stderr.write("Workflow lookup class is undefined.")
+        logger.error("Workflow lookup class is undefined.")
         sys.exit(1)
     try:
         node = module_attribute_from_string(args.module)
     except ModuleNotFoundError as e:
-        sys.stderr.write(f"The module '{args.module}' cannot be imported. ({e})")
+        logger.error(f"The module '{args.module}' cannot be imported. ({e})")
+        logger.debug(f"{e}", exc_info=e)
         sys.exit(1)
     except AttributeError as e:
-        sys.stderr.write(f"The node object '{args.module}' could not be found. ({e})")
+        logger.error(f"The node object '{args.module}' could not be found. ({e})")
+        logger.debug(f"{e}", exc_info=e)
         sys.exit(1)
 
     if isinstance(node, AsyncConsumer):
@@ -293,10 +269,10 @@ def _cmd_trigger_create(args: argparse.Namespace):
     if not args.module_name.startswith("wkflws_"):
         sys.stderr.write(
             "It is recommended to prefix your trigger node with wkflws_ to indicate "
-            f"it's intention. (e.g. wkflws_{args.module_name})"
+            f"it's intention. (e.g. wkflws_{args.module_name})\n"
         )
     if args.module_name == "MODNAME":
-        sys.stderr.write("This is the template variable used, and a bad module name.")
+        sys.stderr.write("This is the template variable used, and a bad module name.\n")
 
     # KeyError shouldn't occur because input was already validated
     download_and_extract_template(
@@ -311,10 +287,10 @@ def _cmd_node_create(args: argparse.Namespace):
     if not args.module_name.startswith("wkflws_"):
         sys.stderr.write(
             "It is recommended to prefix your node with wkflws_ to indicate it's "
-            f"intention. (e.g. wkflws_{args.module_name})"
+            f"intention. (e.g. wkflws_{args.module_name})\n"
         )
     if args.module_name == "MODNAME":
-        sys.stderr.write("This is the template variable used, and a bad module name.")
+        sys.stderr.write("This is the template variable used, and a bad module name.\n")
 
     # KeyError shouldn't occur because input was already validated
     download_and_extract_template(
@@ -339,7 +315,7 @@ async def _cmd_publish(args: argparse.Namespace):
     if not isinstance(payload, list):
         sys.stderr.write(
             "Format Error: Expecting an array of dictionaries, found: "
-            f"{type(payload).__name__}"
+            f"{type(payload).__name__}\n"
         )
         sys.exit(1)
 
@@ -349,22 +325,22 @@ async def _cmd_publish(args: argparse.Namespace):
     # be unwanted duplicates pushed.
     for i, data in enumerate(payload):
         if "key" not in data:
-            sys.stderr.write(f"key missing from event index #{i}")
+            sys.stderr.write(f"key missing from event index #{i}\n")
             sys.exit(1)
         if "topic" not in data:
-            sys.stderr.write(f"topic missing from event index #{i}")
+            sys.stderr.write(f"topic missing from event index #{i}\n")
             sys.exit(1)
         if "event" not in data:
-            sys.stderr.write(f"event missing from event index #{i}")
+            sys.stderr.write(f"event missing from event index #{i}\n")
             sys.exit(1)
         if "identifier" not in data["event"]:
-            sys.stderr.write(f"identifier missing from event in index #{i}")
+            sys.stderr.write(f"identifier missing from event in index #{i}\n")
             sys.exit(1)
         if "metadata" not in data["event"]:
-            sys.stderr.write(f"metadata missing from event in index #{i}")
+            sys.stderr.write(f"metadata missing from event in index #{i}\n")
             sys.exit(1)
         if "data" not in data["event"]:
-            sys.stderr.write(f"metadata missing from event in index #{i}")
+            sys.stderr.write(f"metadata missing from event in index #{i}\n")
             sys.exit(1)
 
     producer = AsyncProducer(
@@ -406,12 +382,12 @@ async def _cmd_publish(args: argparse.Namespace):
                     sys.stderr.write(fut.exception())
                 elif fut.result():
                     sys.stderr.write(
-                        f'Published event {fut.result().key.decode("utf-8")}'
+                        f'Published event {fut.result().key.decode("utf-8")}\n'
                     )
 
                 complete_awaitables += 1
 
-        # sys.stderr.write(f'Published event with key {data["key"]}')
+        # sys.stderr.write(f'Published event with key {data["key"]}\n')
     finally:
         producer.close()
 
@@ -559,7 +535,7 @@ def main():
         log_level = log_level - (len(args.v) * 10)
         if log_level < 10:
             log_level = 10  # DEBUG is the lowest
-    # logger.setLevel(log_level)
+    logger.setLevel(log_level)
 
     if args.command is None:
         parser.print_help()
