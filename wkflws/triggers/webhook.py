@@ -314,12 +314,18 @@ class WebhookTrigger(BaseTrigger):
         # blocking/waiting.
         num_workers = 1 or multiprocessing.cpu_count()
 
+        # Without this the process will hang when killed.
+        def on_exit(arbiter):
+            if self.producer:
+                self.producer.close()
+
         options = {
             "bind": "127.0.0.1:8000",  # f"{args.host}:{args.port}",
             "workers": num_workers,
             "worker_class": "uvicorn.workers.UvicornWorker",
             "logconfig_dict": logdict_for_app_server,
             "timeout": 5,
+            "on_exit": on_exit,
         }
 
         if logger.getEffectiveLevel() == LogLevel.DEBUG:
