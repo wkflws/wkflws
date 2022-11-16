@@ -316,11 +316,7 @@ class WebhookTrigger(BaseTrigger):
             # Gunicorn forks new processes which handle the actual API logic. As a
             # result the producer needs to be started in each worker instead of in
             # this classes __init__ or elsewhere.
-            webhook_trigger.maybe_start_producer()
-            import atexit
-
-            # if webhook_trigger.producer:
-            #     atexit.register(webhook_trigger.producer.close)
+            webhook_trigger.initialize_listener()
 
         def worker_exit(worker, webhook_trigger: WebhookTrigger):
             # Ensure the Kafka producer is properly shut down when a worker exits.

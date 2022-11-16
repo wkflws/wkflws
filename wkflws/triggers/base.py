@@ -8,7 +8,7 @@ from ..conf import settings
 from ..events import Event
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
-from ..tracing import get_tracer
+from ..tracing import get_tracer, initialize_tracer
 from ..workflow import initialize_workflows
 
 
@@ -124,14 +124,27 @@ class BaseTrigger(abc.ABC):
         """Start the event loop for processing raw incoming data.
 
         The listener accepts data from a 3rd party data source, formats it, and
-        publishes it to Kafka.
+        publishes it to Kafka. You MUST call :meth:`BaseTrigger.initialize_listener`
+        to initialize additional configuration.
+
+        .. note::
+
+           The reason why you must manually call ``initialize_listener`` instead of
+           being done automatically behind the scenes is because it can't be predicted
+           when. For example the WebhookTrigger uses Gunicorn which forks worker
+           processes and initialization must be done there rather than the main process.
+
         """
         raise NotImplementedError(
             "`start_listener` not implemented. If there is no listener then it should "
-            "be an explicit no-op."
+            "be an explicit no-op. (Be sure to call initialize_listener!)"
         )
 
-    def maybe_start_producer(self):
+    def initialize_listener(self):
+        """Initializes additional components of the listener."""
+
+        initialize_tracer()
+
         if (
             not self.producer
             and self.kafka_topic is not None
@@ -164,7 +177,19 @@ class BaseTrigger(abc.ABC):
                 process_func=self.process_func,
             )
 
+            initialize_tracer()
             await self.consumer.start()
+
+        elif not self.kafka_topic:
+            logger.error(
+                f"Kafka topic is undefined for {self.__class__.__module__}"
+                f"{self.__class__.__name__}"
+            )
+        else:
+            logger.error(
+                "No Kafka host defined. Either define the Kafka host or use inline "
+                "processing on the listener."
+            )
         # raise NotImplementedError(
         #     "`start_processor` not implemented. If there is no processor then it "
         #     "should be an explicit no-op."

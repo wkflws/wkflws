@@ -62,6 +62,7 @@ def initialize_tracer():
     This should be called once sometime during startup.
     """
     from .conf import settings  # prevent circular import due to model validation
+    from .logging import logger  # prevent circular import
 
     if (
         not trace
@@ -70,6 +71,7 @@ def initialize_tracer():
     ):
         return
 
+    logger.debug("Initializing tracing...")
     resource = Resource(attributes={SERVICE_NAME: settings.TRACING_RESOURCE_NAME})
     trace_provider = TracerProvider(resource=resource)
     exporter: Optional[SpanExporter] = None
