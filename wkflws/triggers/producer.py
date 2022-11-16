@@ -59,18 +59,19 @@ class AsyncProducer:
                     "sasl.password": settings.KAFKA_PASSWORD or "",
                 }
             )
-        self._loop = loop or asyncio.get_event_loop()
+
         self._producer = confluent_kafka.Producer(
             kafka_config,
         )
+        self.default_topic = default_topic
+
+        self._loop = loop or asyncio.get_event_loop()
 
         self._canceled = False
         self._poll_thread = Thread(target=self._poll_loop)
 
-        self.default_topic = default_topic
-
-        self._poll_thread.start()
         atexit.register(self.close)
+        self._poll_thread.start()
 
     def _poll_loop(self):
         """Loop to poll Kafka.
@@ -131,5 +132,9 @@ class AsyncProducer:
         This method should be called when your application exits. See :mod:`atexit`
         if you are using a framework that doesn't have a hook for shutdown.
         """
+        logger.info("Stopping Kafka Producer")
         self._canceled = True
         self._poll_thread.join()
+        logger.debug("Flushing Kafka messages")
+        count = self._producer.flush()
+        logger.debug(f"Flushed {count} Kafka messages.")

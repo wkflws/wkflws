@@ -132,30 +132,15 @@ class WebhookTrigger(BaseTrigger):
         )
 
         self.router = APIRouter()
+        self._routes = routes
 
         self.app.version = self.client_version
-
-        @self.app.on_event("shutdown")
-        async def disconnect_producer():  # type:ignore # not an unused func
-            if self.producer is not None:
-                logger.info(
-                    "Caught API shutdown event. Trying to gracefully close Kafka "
-                    "producer."
-                )
-                self.producer.close()
 
         # This is to map functions to routes so we can get the generic path (without
         # custom path variables) to decrease cardinality of the span
         self.func_to_route_map: dict[
             Callable[[Request, Response], Awaitable[Optional[Event]]], str
         ] = {}
-
-        for route in routes:
-            self.add_route(*route)
-
-        # This must come after adding routes otherwise they won't be initialized and
-        # served.
-        self.app.include_router(self.router)
 
     def add_route(
         self,
@@ -292,21 +277,34 @@ class WebhookTrigger(BaseTrigger):
         By default this will start 1 worker for each CPU core on the host machine.
         """
         logger.debug("Starting listener...")
+
+        for _route in self._routes:
+            self.add_route(*_route)
+
+        # This must come after adding routes otherwise they won't be initialized and
+        # served.
+        self.app.include_router(self.router)
+
         # for arg, value in args._get_kwargs():
         #     if arg.upper() in ENV_TO_CLI_ARGS and value is not None:
         #         os.environ[arg.upper()] = value
 
         # if args.dev:
 
+        # NOTE: This doesn't work.
         # uvicorn.run(
-        #     "wkflws_shopify.trigger:webhook_trigger.app",
+        #     "wkflws.triggers.webhook:WebhookTrigger.app",
         #     host="127.0.0.1",  # args.host,
         #     port=8000,  # args.port,
         #     reload=True,
         #     reload_excludes=("bin/*", "**/.mypy_cache/*"),
-        #     # log_config=logdict_for_app_server,
+        #     log_config=logdict_for_app_server,
         #     server_header=False,
         # )
+        # import sys
+
+        # if self.producer:
+        #     self.producer.close()
         # sys.exit(0)
 
         # this is usually (count*2)+1 but i imagine the async nature of the code base
@@ -314,10 +312,30 @@ class WebhookTrigger(BaseTrigger):
         # blocking/waiting.
         num_workers = 1 or multiprocessing.cpu_count()
 
-        # Without this the process will hang when killed.
-        def on_exit(arbiter):
-            if self.producer:
-                self.producer.close()
+        def post_worker_init(worker, webhook_trigger: WebhookTrigger):
+            # Gunicorn forks new processes which handle the actual API logic. As a
+            # result the producer needs to be started in each worker instead of in
+            # this classes __init__ or elsewhere.
+            webhook_trigger.maybe_start_producer()
+            import atexit
+
+            # if webhook_trigger.producer:
+            #     atexit.register(webhook_trigger.producer.close)
+
+        def worker_exit(worker, webhook_trigger: WebhookTrigger):
+            # Ensure the Kafka producer is properly shut down when a worker exits.
+            # Uvicorn has exited by this point (as this is called from a Gunicorn hook)
+            # so no new requests should come in and any Kafka messages can be flushed.
+            #
+            # This ends up being a work around for a file descriptor issue in OS X.
+            # The forked workers from Gunicorn need to start BEFORE the asyncio loop.
+            # https://stackoverflow.com/questions/45438323/
+            #
+            # cleaning up kafka here will prevent a deadlock where the subprocess is
+            # waiting on the producer._poll_loop before running the atexit handler
+            # defined in the producer's __init__
+            if webhook_trigger.producer:
+                webhook_trigger.producer.close()
 
         options = {
             "bind": "127.0.0.1:8000",  # f"{args.host}:{args.port}",
@@ -325,7 +343,8 @@ class WebhookTrigger(BaseTrigger):
             "worker_class": "uvicorn.workers.UvicornWorker",
             "logconfig_dict": logdict_for_app_server,
             "timeout": 5,
-            "on_exit": on_exit,
+            "post_worker_init": lambda worker: post_worker_init(worker, self),
+            "worker_exit": lambda _arbiter, worker: worker_exit(worker, self),
         }
 
         if logger.getEffectiveLevel() == LogLevel.DEBUG:
@@ -362,10 +381,10 @@ class _GunicornDaemon(gunicorn.app.base.BaseApplication):
         config = {
             key: value
             for key, value in self.options.items()
-            if key in self.cfg.settings and value is not None  # type:ignore # gunicorn
+            if key in self.cfg.settings and value is not None
         }
         for key, value in config.items():
-            self.cfg.set(key.lower(), value)  # type: ignore  # in gunicorn
+            self.cfg.set(key.lower(), value)
 
     def load(self):
         return self.application

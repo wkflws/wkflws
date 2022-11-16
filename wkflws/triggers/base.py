@@ -2,7 +2,9 @@ import abc
 import asyncio
 from typing import Any, Awaitable, Callable, Optional, Union
 
+from .consumer import AsyncConsumer
 from .producer import AsyncProducer
+from ..conf import settings
 from ..events import Event
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
@@ -71,14 +73,12 @@ class BaseTrigger(abc.ABC):
         if self.kafka_topic is None:
             logger.info("No Kafka topic defined. Event processing will be done inline.")
 
-        self.kafka_consumer_group = kafka_consumer_group
+        # casting str to str for type checking. pyright/mypy aren't parsing the compound
+        # conditional statement checking for None above.
+        self.kafka_consumer_group = str(kafka_consumer_group)
 
         self.producer: Optional[AsyncProducer] = None
-        if self.kafka_topic is not None:
-            self.producer = AsyncProducer(
-                client_id=self.client_identifier,
-                default_topic=self.kafka_topic,
-            )
+        self.consumer: Optional[AsyncConsumer] = None
 
     async def send_event(self, event: Event):
         """Send ``event`` to the event bus.
@@ -131,14 +131,40 @@ class BaseTrigger(abc.ABC):
             "be an explicit no-op."
         )
 
+    def maybe_start_producer(self):
+        if (
+            not self.producer
+            and self.kafka_topic is not None
+            and settings.KAFKA_HOST is not None
+        ):
+            logger.info(
+                f"Initializing producer to topic:{self.kafka_topic} as "
+                f"client:{self.client_identifier}"
+            )
+            self.producer = AsyncProducer(
+                client_id=self.client_identifier,
+                default_topic=self.kafka_topic,
+            )
+
     async def start_processor(self):
         """Start the event loop for processing data from the event bus.
 
         The processor accepts data from the event bus (generally formatted by the
         :meth:`start_listener` process) kicking off any necessary pipelines.
         """
-        # if self.consumer???:
-        #     await self.consumer.start()
+        if (
+            not self.consumer
+            and self.kafka_topic is not None
+            and settings.KAFKA_HOST is not None
+        ):
+            self.consumer = AsyncConsumer(
+                client_id=self.client_identifier,
+                consumer_group=self.kafka_consumer_group,
+                topic=self.kafka_topic,
+                process_func=self.process_func,
+            )
+
+            await self.consumer.start()
         # raise NotImplementedError(
         #     "`start_processor` not implemented. If there is no processor then it "
         #     "should be an explicit no-op."

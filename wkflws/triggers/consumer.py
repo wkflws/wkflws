@@ -2,7 +2,7 @@
 import asyncio
 import functools
 import json
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from ..conf import settings
 from ..events import Event
@@ -31,18 +31,21 @@ class AsyncConsumer:
     def __init__(
         self,
         *,
-        client_identifier: str,
+        client_id: str,
         consumer_group: str,
         topic: str,
         process_func: Callable[
-            [Event], Awaitable[tuple[Optional[str], dict[str, Any]]]
+            [Event],
+            Awaitable[
+                tuple[Optional[str], Union[list[dict[str, Any]], dict[str, Any]]]
+            ],
         ],
         loop: Optional[asyncio.BaseEventLoop] = None,
     ):
         """Initialize new asynchronous Kafka consumer.
 
         Args:
-            client_identifer: The client identifier for this consumer. Generally your
+            client_id: The client identifier for this consumer. Generally your
                 module's ``__identifier__`` value should be used. (This value is
                 provided to the ``WORKFLOW_MODEL``.)
             consuer_group: The consumer group name to assign to this consumer.
@@ -60,7 +63,7 @@ class AsyncConsumer:
         # use-case for that at this point.
         self.topic = topic
         self.consumer_group = consumer_group
-        self.client_identifier = client_identifier
+        self.client_identifier = client_id
 
         self._canceled = False
         self._consumer: Optional[confluent_kafka.Consumer] = None
