@@ -204,9 +204,10 @@ class WebhookTrigger(BaseTrigger):
            A 200 status code. Generally this tells the remote server we've accepted
            the data and don't retry.
         """
+        existing_trace_context = get_span_context(original_request.headers)
         with get_tracer().start_as_current_span(
             self.func_to_route_map[func],
-            get_span_context(original_request.headers),
+            existing_trace_context,
             attributes={
                 "http.method": original_request.method,
                 "http.url": str(original_request.url),

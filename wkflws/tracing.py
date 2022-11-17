@@ -118,7 +118,7 @@ def get_tracer(*args, **kwargs) -> Any:
 def get_span_context(
     carrier: Optional[Mapping[str, str]] = None,
 ) -> Optional[trace.SpanContext]:  # type:ignore # trace may be None
-    """Attempt to load trace infor from a carrier which can be used to resume a trace.
+    """Attempt to load trace info from a carrier which can be used to resume a trace.
 
     Args:
         carrier: A mapping which may contain information (trace_id, span_id, trace
@@ -130,6 +130,11 @@ def get_span_context(
     # ignore the type because introspection says this returns a Context but
     # we expect a SpanContext
     return TraceContextTextMapPropagator().extract(carrier=carrier)  # type:ignore
+
+
+def inject_span_context(carrier: Mapping[str, Any]):
+    """Injects the span context into the provided mapping."""
+    TraceContextTextMapPropagator().inject(carrier)
 
 
 class pretendtracer:

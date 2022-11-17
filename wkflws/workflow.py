@@ -49,7 +49,7 @@ class WorkflowExecution(BaseModel):
     #: The name of the current state. If this is None then the workflow has not started.
     current_state_name: Optional[str] = None
 
-    async def start(self, state_input: dict[str, Any]):
+    async def start(self, state_input: Union[list[dict[str, Any]], dict[str, Any]]):
         """Begin the execution of ``workflow_definition``."""
         with get_tracer().start_as_current_span("workflow.WorkflowExecution.start"):
             logger.debug(f"Starting workflow id {self.workflow_id}")
@@ -651,7 +651,7 @@ async def initialize_workflows(
     *,
     initial_node_id: str,
     event: Event,
-    workflow_input: dict[str, Any],
+    workflow_input: Union[list[dict[str, Any]], dict[str, Any]],
 ) -> tuple[WorkflowExecution, ...]:
     """Initialize workflows that need to be executed by calling the lookup helper."""
     from .lookup import get_lookup_helper_object  # prevent circular import

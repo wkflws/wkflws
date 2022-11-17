@@ -8,7 +8,7 @@ from ..conf import settings
 from ..events import Event
 from ..exceptions import WkflwConfigurationException
 from ..logging import logger
-from ..tracing import get_tracer, initialize_tracer
+from ..tracing import get_tracer, initialize_tracer, inject_span_context
 from ..workflow import initialize_workflows
 
 
@@ -92,6 +92,7 @@ class BaseTrigger(abc.ABC):
         with get_tracer().start_as_current_span(
             "triggers.base.BaseTrigger.send_event",
         ) as span:
+            inject_span_context(event.metadata)
             if self.producer:
                 span.set_attribute("event_process.method", "kafka")
                 await self.producer.produce(

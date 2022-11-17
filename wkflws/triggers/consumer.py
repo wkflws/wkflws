@@ -12,6 +12,7 @@ from ..exceptions import (
     WkflwKafkaException,
 )
 from ..logging import logger
+from ..tracing import get_span_context, get_tracer
 from ..workflow import initialize_workflows
 
 if settings.KAFKA_HOST:
@@ -171,32 +172,46 @@ class AsyncConsumer:
 
             # The incoming event seems valid so process it...
             payload = json.loads(kfk_msg.value())
+            metadata = payload.get("metadata", {})
 
-            kfk_key = kfk_msg.key()
-            # The Voyage monolith doesn't always set the Kafka key
-            identifier = kfk_key.decode("utf-8") if kfk_key else payload["identifier"]
+            existing_trace_context = get_span_context(metadata)
+            with get_tracer().start_as_current_span(
+                "triggers.consumer.AsyncConsumer._poll_loop",
+                existing_trace_context,
+            ) as span:
 
-            event = Event(
-                identifier=identifier,
-                metadata=payload.get("metadata", {}),
-                data=payload.get("data", None),
-            )
+                kfk_key = kfk_msg.key()
+                # The Voyage monolith doesn't always set the Kafka key
+                identifier = (
+                    kfk_key.decode("utf-8") if kfk_key else payload["identifier"]
+                )
 
-            initial_node_id, workflow_input = await self.process_func(event)
+                event = Event(
+                    identifier=identifier,
+                    metadata=metadata,
+                    data=payload.get("data", None),
+                )
 
-            if initial_node_id is None:
-                continue
+                initial_node_id, workflow_input = await self.process_func(event)
 
-            workflows = await initialize_workflows(
-                initial_node_id=initial_node_id,
-                event=event,
-                workflow_input=workflow_input,
-            )
+                span.set_attribute("initial_node_id", initial_node_id or "None")
 
-            if len(workflows) < 1:
-                continue
+                if initial_node_id is None:
+                    continue
 
-            asyncio.gather(*(w.start(workflow_input) for w in workflows))
+                # Sets node_id so it can be searched easily, even if it's the initial
+                span.set_attribute("node_id", initial_node_id)
 
-            # TODO: If successful possibly asynchronously commit the offset (it's
-            # autocommit now)
+                workflows = await initialize_workflows(
+                    initial_node_id=initial_node_id,
+                    event=event,
+                    workflow_input=workflow_input,
+                )
+
+                if len(workflows) < 1:
+                    continue
+
+                asyncio.gather(*(w.start(workflow_input) for w in workflows))
+
+                # TODO: If successful possibly asynchronously commit the offset (it's
+                # autocommit now)
